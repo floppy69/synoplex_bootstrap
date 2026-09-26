@@ -326,6 +326,8 @@ radarr      type=radarr  source=auto
 tv-sonarr   type=sonarr  source=auto
 ```
 
+The bootstrap also sets AllDebrid `download_uncached` to `true`, allowing Decypharr to submit valid uncached releases to AllDebrid while keeping Arr discovery native and duplicate-free.
+
 Verify Decypharr:
 
 ```bash
