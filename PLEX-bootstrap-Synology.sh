@@ -757,6 +757,14 @@ fi
 
 # Plex has now been installed/reused, so its PlexMediaServer shared folder may
 # safely become the default home for SynoPlex state and Decypharr.
+# Never fabricate the PlexMediaServer root as a plain directory: DSM/Plex owns
+# creation of that shared folder.
+if [ "$STACK_DIR" = "$DEFAULT_PLEX_SHARED_ROOT" ] && [ ! -d "$DEFAULT_PLEX_SHARED_ROOT" ]; then
+    err "PlexMediaServer shared folder was not created by Plex: $DEFAULT_PLEX_SHARED_ROOT"
+    err "Fix/install Plex first, or provide an explicit STACK_JSON path."
+    exit 1
+fi
+
 mkdir -p "$STACK_DIR" "$DECYPHARR_ROOT" "$DECYPHARR_MOUNT" "$DECYPHARR_DOWNLOADS"
 chmod 755 "$DECYPHARR_ROOT" "$DECYPHARR_MOUNT" 2>/dev/null || true
 chmod 775 "$DECYPHARR_DOWNLOADS" 2>/dev/null || true
