@@ -117,7 +117,7 @@ On a new installation, SynoPlex configuration/state and Decypharr default to the
             +-- qbittorrent/
 ```
 
-The bootstrap does not require `/volume1` specifically. It detects an existing `/volume*/PlexMediaServer` directory and uses it as the default state root. Explicit `STACK_JSON`, `WATCHLIST_STATE`, `DECYPHARR_ROOT`, and related variables always override these defaults. Existing deployments are not migrated automatically.
+The bootstrap does not require `/volume1` specifically. It detects an existing `/volume*/PlexMediaServer` directory and uses it as the default state root for new installations. If an existing SynoPlex `stack.json` is found in the legacy `VideoFactory/_Plex` locations, those legacy paths remain the defaults on rerun. Explicit `STACK_JSON`, `WATCHLIST_STATE`, `DECYPHARR_ROOT`, and related variables always override automatic detection. Existing deployments are not migrated automatically.
 
 ## Default ports
 
@@ -199,7 +199,7 @@ Decypharr appdata    : /var/packages/decypharr/var
 qBittorrent downloads: /volume1/VideoFactory/_Plex/downloads/qbittorrent
 ```
 
-Existing installations keep their current locations when explicit paths are supplied. The bootstrap does not move an existing `stack.json`, Watchlist state file, or Decypharr tree.
+Existing installations keep their current locations. The bootstrap also auto-detects the previous `/volumeX/VideoFactory/_Plex[/_Config]/stack.json` layout and reuses it on rerun. It does not move an existing `stack.json`, Watchlist state file, or Decypharr tree.
 
 On the reference installation, Radarr currently uses port `8310`, which is detected automatically from its existing configuration.
 
