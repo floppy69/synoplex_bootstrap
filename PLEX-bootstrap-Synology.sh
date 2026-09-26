@@ -236,6 +236,16 @@ DEFAULT_STACK_DIR="$DEFAULT_PLEX_SHARED_ROOT"
 DEFAULT_PLEX_DATA_ROOT="$DEFAULT_VOLUME/VideoFactory/_Plex"
 DEFAULT_DECYPHARR_ROOT="$DEFAULT_PLEX_SHARED_ROOT/decypharr"
 
+# Backward compatibility: when a previous SynoPlex stack already exists,
+# keep its paths as defaults. New installations use PlexMediaServer.
+if [ -f "$DEFAULT_VOLUME/VideoFactory/_Plex/_Config/stack.json" ]; then
+    DEFAULT_STACK_DIR="$DEFAULT_VOLUME/VideoFactory/_Plex/_Config"
+    DEFAULT_DECYPHARR_ROOT="$DEFAULT_VOLUME/VideoFactory/_Decypharr"
+elif [ -f "$DEFAULT_VOLUME/VideoFactory/_Plex/stack.json" ]; then
+    DEFAULT_STACK_DIR="$DEFAULT_VOLUME/VideoFactory/_Plex"
+    DEFAULT_DECYPHARR_ROOT="$DEFAULT_VOLUME/VideoFactory/_Decypharr"
+fi
+
 # Detect the actual ports used by existing *Arr packages.
 # SynoCommunity normally stores config.xml under /var/packages/<pkg>/var,
 # but keep an @appdata fallback for DSM variations.
@@ -388,8 +398,7 @@ MOVIES_ROOT="$(trim_trailing_slash "$MOVIES_ROOT")"
 SERIES_ROOT="${SERIES_ROOT:-$(ask "Series library directory" "$PLEX_LIBRARY_ROOT/Series")}" 
 SERIES_ROOT="$(trim_trailing_slash "$SERIES_ROOT")"
 
-DEFAULT_DECYPHARR_FROM_PLEX="$DEFAULT_PLEX_SHARED_ROOT/decypharr"
-[ "$PLEX_DATA_ROOT" = "$DEFAULT_PLEX_DATA_ROOT" ] && DEFAULT_DECYPHARR_FROM_PLEX="$DEFAULT_DECYPHARR_ROOT"
+DEFAULT_DECYPHARR_FROM_PLEX="$DEFAULT_DECYPHARR_ROOT"
 DECYPHARR_ROOT="${DECYPHARR_ROOT:-$(ask "Decypharr data root" "$DEFAULT_DECYPHARR_FROM_PLEX")}" 
 DECYPHARR_ROOT="$(trim_trailing_slash "$DECYPHARR_ROOT")"
 DECYPHARR_MOUNT="${DECYPHARR_MOUNT:-$(ask "Decypharr virtual library mount point" "$DECYPHARR_ROOT/mount")}" 
@@ -549,30 +558,13 @@ if [ "$INTERACTIVE" = "1" ]; then
     fi
 fi
 
-mkdir -p "$STACK_DIR" "$PLEX_DATA_ROOT" "$PLEX_LIBRARY_ROOT" "$MOVIES_ROOT" "$SERIES_ROOT" \
-         "$DECYPHARR_ROOT" "$DECYPHARR_MOUNT" "$DECYPHARR_DOWNLOADS" "$QBIT_DOWNLOADS"
-chmod 755 "$PLEX_DATA_ROOT" "$PLEX_LIBRARY_ROOT" "$MOVIES_ROOT" "$SERIES_ROOT" \
-          "$DECYPHARR_ROOT" "$DECYPHARR_MOUNT" 2>/dev/null || true
-chmod 775 "$DECYPHARR_DOWNLOADS" "$QBIT_DOWNLOADS" 2>/dev/null || true
-log "Directory tree created/verified"
-
-# Keep the Plex Watchlist state beside stack.json on new installations.
-# Existing state is preserved verbatim.
-if [ ! -f "$WATCHLIST_STATE" ]; then
-    cat > "$WATCHLIST_STATE" <<'EOF_WATCHLIST_STATE'
-{
-  "version": 2,
-  "initialized": false,
-  "current": [],
-  "pendingRemoved": []
-}
-EOF_WATCHLIST_STATE
-    chown "$STACK_OWNER:$STACK_GROUP" "$WATCHLIST_STATE" 2>/dev/null || true
-    chmod 600 "$WATCHLIST_STATE" 2>/dev/null || true
-    log "Watchlist state initialized: $WATCHLIST_STATE"
-else
-    log "Watchlist state already exists: $WATCHLIST_STATE"
-fi
+# Media paths can be prepared immediately. The PlexMediaServer shared folder
+# is deliberately not created here: on a fresh NAS, let the Plex package create
+# its DSM shared folder first.
+mkdir -p "$PLEX_DATA_ROOT" "$PLEX_LIBRARY_ROOT" "$MOVIES_ROOT" "$SERIES_ROOT" "$QBIT_DOWNLOADS"
+chmod 755 "$PLEX_DATA_ROOT" "$PLEX_LIBRARY_ROOT" "$MOVIES_ROOT" "$SERIES_ROOT" 2>/dev/null || true
+chmod 775 "$QBIT_DOWNLOADS" 2>/dev/null || true
+log "Media directory tree created/verified"
 
 PLEXROOT="$PLEX_DATA_ROOT"
 VF="$(dirname "$PLEX_DATA_ROOT")"
@@ -761,6 +753,31 @@ if [ "$INSTALL_QBIT" = "1" ] || is_installed qbittorrent; then
 fi
 if [ "$INSTALL_BAZARR" = "1" ] || is_installed bazarr; then
     install_pkg bazarr "Bazarr" || FAILED="$FAILED bazarr"
+fi
+
+# Plex has now been installed/reused, so its PlexMediaServer shared folder may
+# safely become the default home for SynoPlex state and Decypharr.
+mkdir -p "$STACK_DIR" "$DECYPHARR_ROOT" "$DECYPHARR_MOUNT" "$DECYPHARR_DOWNLOADS"
+chmod 755 "$DECYPHARR_ROOT" "$DECYPHARR_MOUNT" 2>/dev/null || true
+chmod 775 "$DECYPHARR_DOWNLOADS" 2>/dev/null || true
+log "SynoPlex state and Decypharr directories created/verified"
+
+# Keep the Plex Watchlist state beside stack.json.
+# Existing state is preserved verbatim.
+if [ ! -f "$WATCHLIST_STATE" ]; then
+    cat > "$WATCHLIST_STATE" <<'EOF_WATCHLIST_STATE'
+{
+  "version": 2,
+  "initialized": false,
+  "current": [],
+  "pendingRemoved": []
+}
+EOF_WATCHLIST_STATE
+    chown "$STACK_OWNER:$STACK_GROUP" "$WATCHLIST_STATE" 2>/dev/null || true
+    chmod 600 "$WATCHLIST_STATE" 2>/dev/null || true
+    log "Watchlist state initialized: $WATCHLIST_STATE"
+else
+    log "Watchlist state already exists: $WATCHLIST_STATE"
 fi
 
 # Python is used only to safely edit JSON. Even a NAS deserves better than sed on secrets.
@@ -1623,8 +1640,8 @@ if [ -x "$ACLTOOL" ]; then
     # owner's permissions on its directory.
     acl_set_rw "$STACK_DIR" "$STACK_OWNER"
 
-    # n8n mounts VideoFactory through CIFS. The SMB account must be able to traverse
-    # _Plex and read only stack.json without exposing secrets to everyone.
+    # Grant the configured n8n SMB account access to the selected state directory
+    # and read-only access to stack.json without exposing secrets to everyone.
     if [ -n "$N8N_STACK_READER" ]; then
         acl_set_ro "$STACK_DIR" "$N8N_STACK_READER"
         acl_set_file_ro "$STACK_JSON" "$N8N_STACK_READER"
