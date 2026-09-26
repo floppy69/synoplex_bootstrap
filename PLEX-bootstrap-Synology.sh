@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.1
+# Version 8.2
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -36,7 +36,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.1"
+SCRIPT_VERSION="8.2"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -1351,6 +1351,8 @@ cfg["retries"] = int(cfg.get("retries") or 3)
 cfg["use_auth"] = False
 
 # Preserve other providers, but always reinject AllDebrid from stack.json.
+# Uncached torrents must be accepted, otherwise Decypharr can look healthy while
+# silently refusing every release that is not already cached by AllDebrid.
 debrids = cfg.get("debrids")
 if not isinstance(debrids, list):
     debrids = []
@@ -1364,7 +1366,7 @@ for d in debrids:
         nd["provider"] = "alldebrid"
         nd["name"] = "alldebrid"
         nd["api_key"] = api_key
-        nd["download_uncached"] = False
+        nd["download_uncached"] = True
         new_debrids.append(nd)
         replaced = True
     else:
@@ -1374,40 +1376,49 @@ if not replaced:
         "provider": "alldebrid",
         "name": "alldebrid",
         "api_key": api_key,
-        "download_uncached": False,
+        "download_uncached": True,
     })
 cfg["debrids"] = new_debrids
 
-# Radarr/Sonarr connus explicitement par Decypharr.
+# Decypharr identifies qBittorrent-compatible Arr requests by their category.
+# Keep the configured Arr names exactly aligned with those lower-case categories.
+# Also remove stale auto-detected entries that point to the same Arr endpoints.
 arrs = cfg.get("arrs")
 if not isinstance(arrs, list):
     arrs = []
 keep = []
+known_arr_names = {normalize(RADARR_CATEGORY), normalize(SONARR_CATEGORY)}
+known_arr_hosts = {
+    str(radarr_url or "").strip().rstrip("/").lower(),
+    str(sonarr_url or "").strip().rstrip("/").lower(),
+}
+known_arr_hosts.discard("")
 for a in arrs:
     if not isinstance(a, dict):
         continue
     n = normalize(a.get("name", ""))
-    if n in {"radarr", "sonarr"}:
+    h = str(a.get("host", "") or "").strip().rstrip("/").lower()
+    if n in known_arr_names or h in known_arr_hosts:
         continue
     keep.append(a)
 
 if radarr_key:
     keep.append({
-        "name": "Radarr",
+        "name": RADARR_CATEGORY,
         "host": radarr_url,
         "token": radarr_key,
         "skip_repair": False,
-        "download_uncached": False,
+        "download_uncached": True,
         "selected_debrid": "alldebrid",
         "source": "config",
     })
 if sonarr_key:
     keep.append({
-        "name": "Sonarr",
+        "name": SONARR_CATEGORY,
         "host": sonarr_url,
         "token": sonarr_key,
         "skip_repair": False,
-        "download_uncached": False,
+        "download_uncached": True,
         "selected_debrid": "alldebrid",
         "source": "config",
     })
