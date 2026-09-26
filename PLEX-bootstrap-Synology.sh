@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.1
+# Version 8.2
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -16,15 +16,16 @@
 #   INTERACTIVE=0
 #   NAS_IP=192.168.1.10
 #   ARCH=avoton                  # optional, normally auto-detected from synoinfo.conf
-#   STACK_DIR=/volume1/MediaStack/config
-#   STACK_JSON=/volume1/MediaStack/config/stack.json
+#   STACK_DIR=/volume1/PlexMediaServer
+#   STACK_JSON=/volume1/PlexMediaServer/stack.json
+#   WATCHLIST_STATE=/volume1/PlexMediaServer/watchlist-state.json
 #   PLEX_DATA_ROOT=/volume1/MediaStack/Plex
 #   PLEX_LIBRARY_ROOT=/volume1/MediaStack/Plex/media
 #   MOVIES_ROOT=/volume1/MediaStack/Plex/media/Movies
 #   SERIES_ROOT=/volume1/MediaStack/Plex/media/Series
-#   DECYPHARR_ROOT=/volume1/MediaStack/Decypharr
-#   DECYPHARR_MOUNT=/volume1/MediaStack/Decypharr/mount
-#   DECYPHARR_DOWNLOADS=/volume1/MediaStack/Decypharr/downloads
+#   DECYPHARR_ROOT=/volume1/PlexMediaServer/decypharr
+#   DECYPHARR_MOUNT=/volume1/PlexMediaServer/decypharr/mount
+#   DECYPHARR_DOWNLOADS=/volume1/PlexMediaServer/decypharr/downloads
 #   DECYPHARR_APPDATA=/var/packages/decypharr/var
 #   RADARR_PORT=7878 SONARR_PORT=8989 PLEX_PORT=32400 DECYPHARR_PORT=8282
 #   RADARR_CATEGORY=radarr SONARR_CATEGORY=sonarr
@@ -36,7 +37,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.1"
+SCRIPT_VERSION="8.2"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -45,7 +46,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.1$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.2$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -218,15 +219,22 @@ for candidate in /volume[0-9]*; do
 done
 [ -n "$DEFAULT_VOLUME" ] || DEFAULT_VOLUME="/volume1"
 
-DEFAULT_STACK_DIR="$DEFAULT_VOLUME/VideoFactory/_Plex/_Config"
-if [ -f "$DEFAULT_VOLUME/VideoFactory/_Plex/_Config/stack.json" ]; then
-    DEFAULT_STACK_DIR="$DEFAULT_VOLUME/VideoFactory/_Plex/_Config"
-elif [ -f "$DEFAULT_VOLUME/VideoFactory/_Plex/stack.json" ]; then
-    DEFAULT_STACK_DIR="$DEFAULT_VOLUME/VideoFactory/_Plex"
-fi
+# Plex creates a shared folder named PlexMediaServer on DSM.
+# Use it as the default home for SynoPlex configuration/state on new installs.
+# Explicit environment variables always win, so existing/custom deployments
+# are not migrated automatically.
+DEFAULT_PLEX_SHARED_ROOT=""
+for candidate in /volume*/PlexMediaServer; do
+    if [ -d "$candidate" ]; then
+        DEFAULT_PLEX_SHARED_ROOT="$candidate"
+        break
+    fi
+done
+[ -n "$DEFAULT_PLEX_SHARED_ROOT" ] || DEFAULT_PLEX_SHARED_ROOT="$DEFAULT_VOLUME/PlexMediaServer"
 
+DEFAULT_STACK_DIR="$DEFAULT_PLEX_SHARED_ROOT"
 DEFAULT_PLEX_DATA_ROOT="$DEFAULT_VOLUME/VideoFactory/_Plex"
-DEFAULT_DECYPHARR_ROOT="$DEFAULT_VOLUME/VideoFactory/_Decypharr"
+DEFAULT_DECYPHARR_ROOT="$DEFAULT_PLEX_SHARED_ROOT/decypharr"
 
 # Detect the actual ports used by existing *Arr packages.
 # SynoCommunity normally stores config.xml under /var/packages/<pkg>/var,
@@ -329,6 +337,9 @@ else
     STACK_JSON="$STACK_DIR/stack.json"
 fi
 
+WATCHLIST_STATE="${WATCHLIST_STATE:-$STACK_DIR/watchlist-state.json}"
+WATCHLIST_STATE="$(trim_trailing_slash "$WATCHLIST_STATE")"
+
 # Owner of stack.json.
 # Prefer the current owner when it is not root, then SUDO_USER,
 # otherwise root. The operator can always override this value.
@@ -377,7 +388,7 @@ MOVIES_ROOT="$(trim_trailing_slash "$MOVIES_ROOT")"
 SERIES_ROOT="${SERIES_ROOT:-$(ask "Series library directory" "$PLEX_LIBRARY_ROOT/Series")}" 
 SERIES_ROOT="$(trim_trailing_slash "$SERIES_ROOT")"
 
-DEFAULT_DECYPHARR_FROM_PLEX="$(dirname "$PLEX_DATA_ROOT")/_Decypharr"
+DEFAULT_DECYPHARR_FROM_PLEX="$DEFAULT_PLEX_SHARED_ROOT/decypharr"
 [ "$PLEX_DATA_ROOT" = "$DEFAULT_PLEX_DATA_ROOT" ] && DEFAULT_DECYPHARR_FROM_PLEX="$DEFAULT_DECYPHARR_ROOT"
 DECYPHARR_ROOT="${DECYPHARR_ROOT:-$(ask "Decypharr data root" "$DEFAULT_DECYPHARR_FROM_PLEX")}" 
 DECYPHARR_ROOT="$(trim_trailing_slash "$DECYPHARR_ROOT")"
@@ -440,6 +451,7 @@ validate_port() {
 
 for path_item in \
     "$STACK_DIR|stack.json directory" \
+    "$WATCHLIST_STATE|watchlist-state.json" \
     "$PLEX_DATA_ROOT|Plex root" \
     "$PLEX_LIBRARY_ROOT|Plex library" \
     "$MOVIES_ROOT|Movies library" \
@@ -511,6 +523,7 @@ fi
 printf '\n------------------ SELECTED CONFIGURATION -------------------\n'
 printf 'NAS / access         : %s\n' "$NAS_IP"
 printf 'stack.json           : %s\n' "$STACK_JSON"
+printf 'watchlist-state.json : %s\n' "$WATCHLIST_STATE"
 printf 'stack.json owner     : %s:%s (0600 + ACL)\n' "$STACK_OWNER" "$STACK_GROUP"
 printf 'n8n stack reader     : %s\n' "${N8N_STACK_READER:-none}"
 printf 'Plex data            : %s\n' "$PLEX_DATA_ROOT"
@@ -542,6 +555,24 @@ chmod 755 "$PLEX_DATA_ROOT" "$PLEX_LIBRARY_ROOT" "$MOVIES_ROOT" "$SERIES_ROOT" \
           "$DECYPHARR_ROOT" "$DECYPHARR_MOUNT" 2>/dev/null || true
 chmod 775 "$DECYPHARR_DOWNLOADS" "$QBIT_DOWNLOADS" 2>/dev/null || true
 log "Directory tree created/verified"
+
+# Keep the Plex Watchlist state beside stack.json on new installations.
+# Existing state is preserved verbatim.
+if [ ! -f "$WATCHLIST_STATE" ]; then
+    cat > "$WATCHLIST_STATE" <<'EOF_WATCHLIST_STATE'
+{
+  "version": 2,
+  "initialized": false,
+  "current": [],
+  "pendingRemoved": []
+}
+EOF_WATCHLIST_STATE
+    chown "$STACK_OWNER:$STACK_GROUP" "$WATCHLIST_STATE" 2>/dev/null || true
+    chmod 600 "$WATCHLIST_STATE" 2>/dev/null || true
+    log "Watchlist state initialized: $WATCHLIST_STATE"
+else
+    log "Watchlist state already exists: $WATCHLIST_STATE"
+fi
 
 PLEXROOT="$PLEX_DATA_ROOT"
 VF="$(dirname "$PLEX_DATA_ROOT")"
@@ -772,7 +803,7 @@ if [ "$CREATE_STACK" = "1" ] && [ ! -f "$STACK_JSON" ]; then
 import json, os, pathlib
 p = pathlib.Path(os.environ["STACK_JSON"])
 p.parent.mkdir(parents=True, exist_ok=True)
-data = {"alldebrid": {"api_key": os.environ["ALLDEBRID_API_KEY"]}}
+data = {"decypharr": {"alldebrid_api_key": os.environ["ALLDEBRID_API_KEY"]}}
 with p.open("w", encoding="utf-8") as f:
     json.dump(data, f, indent=2, ensure_ascii=False)
     f.write("\n")
@@ -846,7 +877,11 @@ import json, os, pathlib, stat, tempfile
 p=pathlib.Path(os.environ["STACK_JSON"])
 with p.open(encoding="utf-8") as f: data=json.load(f)
 if not isinstance(data,dict): raise SystemExit("stack.json must contain a JSON object")
-data["alldebrid"]={"api_key":os.environ["ALLDEBRID_API_KEY"]}
+decy = data.get("decypharr")
+if not isinstance(decy, dict):
+    decy = {}
+    data["decypharr"] = decy
+decy["alldebrid_api_key"] = os.environ["ALLDEBRID_API_KEY"]
 st=os.stat(p)
 fd,tmp=tempfile.mkstemp(prefix='.stack.',dir=str(p.parent))
 try:
@@ -1081,7 +1116,7 @@ fi
 
 export STACK_JSON NAS_IP RADARR_PORT SONARR_PORT PROWLARR_PORT QBIT_PORT BAZARR_PORT PLEX_PORT DECYPHARR_PORT
 export RADARR_KEY SONARR_KEY PROWLARR_KEY DECYPHARR_MOUNT DECYPHARR_DOWNLOADS QBIT_DOWNLOADS
-export MOVIES_ROOT SERIES_ROOT VF ALLDEBRID_API_KEY RADARR_CATEGORY SONARR_CATEGORY
+export MOVIES_ROOT SERIES_ROOT VF ALLDEBRID_API_KEY RADARR_CATEGORY SONARR_CATEGORY WATCHLIST_STATE
 
 "$PYTHON" <<'PY'
 import json, os, stat, tempfile
@@ -1104,8 +1139,7 @@ def obj(name):
 obj("nas")["host"] = nas
 
 if os.environ.get("ALLDEBRID_API_KEY"):
-    ald = obj("alldebrid")
-    ald["api_key"] = os.environ["ALLDEBRID_API_KEY"]
+    obj("decypharr")["alldebrid_api_key"] = os.environ["ALLDEBRID_API_KEY"]
 
 plex = obj("plex")
 plex["url"] = f"http://{nas}:{os.environ['PLEX_PORT']}"
@@ -1149,6 +1183,7 @@ paths["series"] = os.environ["SERIES_ROOT"]
 paths["decypharr_mount"] = os.environ["DECYPHARR_MOUNT"]
 paths["decypharr_downloads"] = os.environ["DECYPHARR_DOWNLOADS"]
 paths["qbittorrent_downloads"] = os.environ["QBIT_DOWNLOADS"]
+paths["watchlist_state"] = os.environ["WATCHLIST_STATE"]
 
 st = os.stat(path)
 mode = stat.S_IMODE(st.st_mode)
@@ -1378,40 +1413,20 @@ if not replaced:
     })
 cfg["debrids"] = new_debrids
 
-# Radarr/Sonarr connus explicitement par Decypharr.
+# Radarr/Sonarr are auto-discovered natively by Decypharr from the
+# qBittorrent-compatible clients configured in the *Arr applications.
+# Do not inject duplicate source=config instances.
+# Remove only legacy bootstrap-managed entries.
 arrs = cfg.get("arrs")
-if not isinstance(arrs, list):
-    arrs = []
-keep = []
-for a in arrs:
-    if not isinstance(a, dict):
-        continue
-    n = normalize(a.get("name", ""))
-    if n in {"radarr", "sonarr"}:
-        continue
-    keep.append(a)
-
-if radarr_key:
-    keep.append({
-        "name": "Radarr",
-        "host": radarr_url,
-        "token": radarr_key,
-        "skip_repair": False,
-        "download_uncached": False,
-        "selected_debrid": "alldebrid",
-        "source": "config",
-    })
-if sonarr_key:
-    keep.append({
-        "name": "Sonarr",
-        "host": sonarr_url,
-        "token": sonarr_key,
-        "skip_repair": False,
-        "download_uncached": False,
-        "selected_debrid": "alldebrid",
-        "source": "config",
-    })
-cfg["arrs"] = keep
+if isinstance(arrs, list):
+    cfg["arrs"] = [
+        a for a in arrs
+        if not (
+            isinstance(a, dict)
+            and normalize(a.get("name", "")) in {"radarr", "sonarr"}
+            and a.get("source") == "config"
+        )
+    ]
 
 uid, gid = choose_uid_gid()
 mount = cfg.get("mount") if isinstance(cfg.get("mount"), dict) else {}
@@ -1820,6 +1835,7 @@ printf 'Decypharr downloads : %s\n' "$DECYPHARR_DOWNLOADS"
 printf 'qBittorrent downloads: %s\n' "$QBIT_DOWNLOADS"
 printf 'Decypharr config    : %s\n' "$DECYPHARR_CONFIG"
 printf 'Source of truth     : %s\n' "$STACK_JSON"
+printf 'Watchlist state     : %s\n' "$WATCHLIST_STATE"
 printf 'stack.json owner    : %s:%s (0600 + ACL)\n' "$STACK_OWNER" "$STACK_GROUP"
 printf 'n8n stack reader    : %s\n' "${N8N_STACK_READER:-none}"
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'Boot sync           : %s\n' "$DECYPHARR_BOOT_SYNC"; else printf 'Boot sync           : disabled\n'; fi
@@ -1843,6 +1859,7 @@ fi
 
 printf '\nUseful checks:\n'
 printf '  curl http://127.0.0.1:%s/version\n' "$DECYPHARR_PORT"
+printf '  curl -s http://127.0.0.1:%s/api/arrs | python3 -m json.tool\n' "$DECYPHARR_PORT"
 printf '  synogetkeyvalue /etc.defaults/synoinfo.conf unique\n'
 printf '  synopkg status decypharr\n'
 printf '  synopkg status radarr\n'
@@ -1856,4 +1873,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.1
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.2
