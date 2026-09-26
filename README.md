@@ -306,6 +306,10 @@ Sonarr -> sonarr
 
 The runtime configuration is generated from `stack.json` and synchronized again at DSM boot.
 
+The generated Decypharr Arr names intentionally match the qBittorrent categories exactly (`radarr` and `sonarr`). This is required because Decypharr resolves Arr-specific settings by category name. The bootstrap also enables `download_uncached` for AllDebrid and both Arr entries, so a valid uncached torrent is submitted to AllDebrid instead of being rejected simply because it is not already cached.
+
+During synchronization, stale auto-detected Arr entries pointing to the same Radarr or Sonarr endpoint are removed before the canonical entries are written. This prevents duplicate Arr definitions from overriding the intended per-category settings.
+
 Verify Decypharr:
 
 ```bash
