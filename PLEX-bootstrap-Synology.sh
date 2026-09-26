@@ -1424,7 +1424,7 @@ for d in debrids:
         nd["provider"] = "alldebrid"
         nd["name"] = "alldebrid"
         nd["api_key"] = api_key
-        nd["download_uncached"] = False
+        nd["download_uncached"] = True
         new_debrids.append(nd)
         replaced = True
     else:
@@ -1434,7 +1434,7 @@ if not replaced:
         "provider": "alldebrid",
         "name": "alldebrid",
         "api_key": api_key,
-        "download_uncached": False,
+        "download_uncached": True,
     })
 cfg["debrids"] = new_debrids
 
