@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.2
+# Version 8.3
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -37,7 +37,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.2"
+SCRIPT_VERSION="8.3"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -46,7 +46,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.2$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.3$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -1795,7 +1795,7 @@ def configure_arr(name, base, api_key, category, root_folder):
     set_field(client, "urlBase", "")
     set_field(client, "username", base.rstrip("/"))
     set_field(client, "password", api_key)
-    set_field(client, "category", category)
+    set_field(client, "category", category)\n    set_field(client, "movieCategory", category)\n    set_field(client, "tvCategory", category)
 
     existing = request(base, api_key, "GET", "/api/v3/downloadclient") or []
     found = next((x for x in existing if str(x.get("name", "")).lower() == "decypharr"), None)
@@ -1898,4 +1898,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.2
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.3
