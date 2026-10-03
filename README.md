@@ -78,7 +78,7 @@ Persistent Watchlist state:
 /volumeX/PlexMediaServer/watchlist-state.json
 ```
 
-Legacy/custom paths are no longer auto-selected. The default configuration root is the detected `/volumeX/PlexMediaServer`; explicit environment-variable overrides remain supported.
+The default configuration root is the detected `/volumeX/PlexMediaServer`; explicit environment-variable overrides remain supported.
 
 Decypharr runtime configuration:
 
@@ -99,7 +99,7 @@ The Decypharr runtime file is generated from `stack.json`. Do not treat the runt
 On a new installation, SynoPlex configuration/state and Decypharr default to the Plex-created `PlexMediaServer` shared folder:
 
 ```text
-/volume1/
+/volumeX/
 |
 +-- PlexMediaServer/
 |   +-- stack.json
@@ -108,8 +108,8 @@ On a new installation, SynoPlex configuration/state and Decypharr default to the
 |       +-- mount/
 |       +-- downloads/
 |
-+-- VideoFactory/
-    +-- _Plex/
++-- Media/
+    +-- Plex/
         +-- media/
         |   +-- Movies/
         |   +-- Series/
@@ -117,7 +117,7 @@ On a new installation, SynoPlex configuration/state and Decypharr default to the
             +-- qbittorrent/
 ```
 
-The bootstrap does not require `/volume1` specifically. It detects the existing Plex shared folder and uses that exact `/volumeX/PlexMediaServer` path as the default SynoPlex configuration/state root. Legacy `VideoFactory/_Plex` locations are not auto-selected anymore. Explicit `STACK_JSON`, `WATCHLIST_STATE`, `DECYPHARR_ROOT`, and related variables can still override the defaults when deliberately supplied.
+The bootstrap does not assume a specific Synology volume number. It detects the existing Plex shared folder and uses `/volumeX/PlexMediaServer` as the SynoPlex configuration/state root. Media defaults to `/volumeX/Media/Plex`, and all paths can be overridden explicitly.
 
 ## Default ports
 
@@ -145,17 +145,17 @@ Existing *Arr ports are read from their `config.xml` files when available. Exist
 
 ## Installation
 
-Copy the bootstrap to the NAS, for example:
+Copy the bootstrap to any temporary or administrative location on the NAS, for example:
 
 ```text
-/volume1/VideoFactory/_Plex/PLEX-bootstrap-Synology.sh
+/tmp/PLEX-bootstrap-Synology.sh
 ```
 
 Open an SSH session and become root:
 
 ```bash
 sudo -i
-cd /volume1/VideoFactory/_Plex
+cd /tmp
 chmod 755 PLEX-bootstrap-Synology.sh
 ```
 
@@ -189,9 +189,9 @@ NAS address          : 192.168.0.4
 stack.json directory : /volumeX/PlexMediaServer
 watchlist-state.json : /volumeX/PlexMediaServer/watchlist-state.json
 Plex data root       : /volume1/VideoFactory/_Plex
-Plex library root    : /volume1/VideoFactory/_Plex/media
-Movies               : /volume1/VideoFactory/_Plex/media/Movies
-Series               : /volume1/VideoFactory/_Plex/media/Series
+Plex library root    : /volumeX/Media/Plex/media
+Movies               : /volumeX/Media/Plex/media/Movies
+Series               : /volumeX/Media/Plex/media/Series
 Decypharr root       : /volumeX/PlexMediaServer/decypharr
 Decypharr mount      : /volumeX/PlexMediaServer/decypharr/mount
 Decypharr downloads  : /volumeX/PlexMediaServer/decypharr/downloads
@@ -199,9 +199,7 @@ Decypharr appdata    : /var/packages/decypharr/var
 qBittorrent downloads: /volume1/VideoFactory/_Plex/downloads/qbittorrent
 ```
 
-By default, reruns now target `/volumeX/PlexMediaServer` for SynoPlex configuration/state. Previous `/volumeX/VideoFactory/_Plex[/_Config]` layouts are not reused automatically. To keep a custom legacy path deliberately, provide `STACK_JSON` or the related path variables explicitly.
-
-On the reference installation, Radarr currently uses port `8310`, which is detected automatically from its existing configuration.
+Reruns use the detected generic paths unless explicit environment-variable overrides are supplied. Existing service ports are detected from native package configuration where possible; otherwise standard defaults are used.
 
 ## stack.json ownership and n8n access
 
@@ -210,27 +208,28 @@ On the reference installation, Radarr currently uses port `8310`, which is detec
 The recommended model is:
 
 ```text
-Floppy       -> owner, read/write
-VideoFactory -> read-only through DSM ACL, used by the n8n CIFS mount
-root         -> implicit administrative access
-others       -> no direct access
+selected DSM owner -> read/write
+optional n8n SMB account -> read-only through DSM ACL
+root               -> implicit administrative access
+others             -> no direct access
 ```
 
 The file remains protected with Unix mode `0600` for its owner, while DSM ACL entries grant narrowly scoped access where required.
 
-For the new layout, n8n should mount the Plex shared folder separately:
+n8n should mount the configuration and media locations using paths that match the values stored in `stack.json`. The defaults are:
 
 ```text
-//NAS/PlexMediaServer -> /data/plex-media-server
+//NAS/PlexMediaServer -> /data/PlexMediaServer
+//NAS/<media-share>   -> /data/media
 ```
 
-n8n therefore prefers the configuration at:
+The orchestrator reads `SYNOPLEX_STACK_JSON` when that environment variable is set; otherwise it uses:
 
 ```text
-/data/plex-media-server/stack.json
+/data/PlexMediaServer/stack.json
 ```
 
-The orchestrator keeps compatibility fallbacks for `/data/PlexMediaServer/stack.json` and the previous `/data/video-factory/_Plex/stack.json` path so an existing deployment can be migrated without an abrupt cutover.
+Path translation between Synology paths and n8n paths is driven by `paths.config_root`, `paths.media_root`, `paths.n8n_config_root`, and `paths.n8n_media_root` in `stack.json`.
 
 The bootstrap explicitly asks for the DSM account used by n8n to read `stack.json` and applies the required DSM ACL without granting write permission to that account.
 
@@ -240,7 +239,7 @@ On the Synology NAS:
 
 ```bash
 ls -l /volumeX/PlexMediaServer/stack.json
-/usr/syno/bin/synoacltool -get /volume1/VideoFactory/_Plex
+/usr/syno/bin/synoacltool -get /volumeX/PlexMediaServer
 /usr/syno/bin/synoacltool -get /volumeX/PlexMediaServer/stack.json
 ```
 
@@ -249,7 +248,7 @@ Test the owner:
 ```bash
 su -s /bin/sh -c \
   'test -r /volumeX/PlexMediaServer/stack.json && echo READ_OK' \
-  Floppy
+  <stack-owner>
 ```
 
 Test the n8n SMB account:
@@ -257,7 +256,7 @@ Test the n8n SMB account:
 ```bash
 su -s /bin/sh -c \
   'test -r /volumeX/PlexMediaServer/stack.json && echo N8N_READ_OK' \
-  VideoFactory
+  <n8n-smb-user>
 ```
 
 ## Package behavior
@@ -480,13 +479,13 @@ Recommended libraries:
 Movies:
 
 ```text
-/volume1/VideoFactory/_Plex/media/Movies
+/volumeX/Media/Plex/media/Movies
 ```
 
 Series:
 
 ```text
-/volume1/VideoFactory/_Plex/media/Series
+/volumeX/Media/Plex/media/Series
 ```
 
 Plex only requires read access to the media library and the Decypharr mounted content required by the deployment.
@@ -556,14 +555,14 @@ tail -f /var/packages/decypharr/var/logs/*
 ```
 
 ```bash
-find /volume1/VideoFactory/_Decypharr \
+find /volumeX/PlexMediaServer/decypharr \
   -maxdepth 4 \
   \( -type f -o -type l \) \
   2>/dev/null
 ```
 
 ```bash
-find /volume1/VideoFactory/_Plex/media \
+find /volumeX/Media/Plex/media \
   -maxdepth 4 \
   \( -type f -o -type l \) \
   2>/dev/null
@@ -618,4 +617,4 @@ For an existing/custom deployment, validate the configured `STACK_JSON` path ins
 
 ## Version
 
-This document corresponds to **PLEX Bootstrap Synology 8.4**.
+This document corresponds to **PLEX Bootstrap Synology 8.5**.
