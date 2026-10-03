@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.3
+# Version 8.4
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -16,9 +16,9 @@
 #   INTERACTIVE=0
 #   NAS_IP=192.168.1.10
 #   ARCH=avoton                  # optional, normally auto-detected from synoinfo.conf
-#   STACK_DIR=/volume1/PlexMediaServer
-#   STACK_JSON=/volume1/PlexMediaServer/stack.json
-#   WATCHLIST_STATE=/volume1/PlexMediaServer/watchlist-state.json
+#   STACK_DIR=/volumeX/PlexMediaServer
+#   STACK_JSON=/volumeX/PlexMediaServer/stack.json
+#   WATCHLIST_STATE=/volumeX/PlexMediaServer/watchlist-state.json
 #   PLEX_DATA_ROOT=/volume1/MediaStack/Plex
 #   PLEX_LIBRARY_ROOT=/volume1/MediaStack/Plex/media
 #   MOVIES_ROOT=/volume1/MediaStack/Plex/media/Movies
@@ -37,7 +37,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.3"
+SCRIPT_VERSION="8.4"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -46,7 +46,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.3$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.4$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -220,9 +220,10 @@ done
 [ -n "$DEFAULT_VOLUME" ] || DEFAULT_VOLUME="/volume1"
 
 # Plex creates a shared folder named PlexMediaServer on DSM.
-# Use it as the default home for SynoPlex configuration/state on new installs.
-# Explicit environment variables always win, so existing/custom deployments
-# are not migrated automatically.
+# SynoPlex configuration/state always defaults to the Plex shared folder on
+# the volume where it actually exists: /volumeX/PlexMediaServer.
+# Explicit environment variables may still override this for advanced/manual
+# deployments, but legacy VideoFactory paths are never auto-selected.
 DEFAULT_PLEX_SHARED_ROOT=""
 for candidate in /volume*/PlexMediaServer; do
     if [ -d "$candidate" ]; then
@@ -235,16 +236,6 @@ done
 DEFAULT_STACK_DIR="$DEFAULT_PLEX_SHARED_ROOT"
 DEFAULT_PLEX_DATA_ROOT="$DEFAULT_VOLUME/VideoFactory/_Plex"
 DEFAULT_DECYPHARR_ROOT="$DEFAULT_PLEX_SHARED_ROOT/decypharr"
-
-# Backward compatibility: when a previous SynoPlex stack already exists,
-# keep its paths as defaults. New installations use PlexMediaServer.
-if [ -f "$DEFAULT_VOLUME/VideoFactory/_Plex/_Config/stack.json" ]; then
-    DEFAULT_STACK_DIR="$DEFAULT_VOLUME/VideoFactory/_Plex/_Config"
-    DEFAULT_DECYPHARR_ROOT="$DEFAULT_VOLUME/VideoFactory/_Decypharr"
-elif [ -f "$DEFAULT_VOLUME/VideoFactory/_Plex/stack.json" ]; then
-    DEFAULT_STACK_DIR="$DEFAULT_VOLUME/VideoFactory/_Plex"
-    DEFAULT_DECYPHARR_ROOT="$DEFAULT_VOLUME/VideoFactory/_Decypharr"
-fi
 
 # Detect the actual ports used by existing *Arr packages.
 # SynoCommunity normally stores config.xml under /var/packages/<pkg>/var,
@@ -324,6 +315,7 @@ printf 'DSM                : %s build %s\n' "${DSM_PRODUCT:-$DSM_MAJOR.$DSM_MINO
 printf 'Unique identifier   : %s\n' "${SYNO_UNIQUE:-not detected}"
 printf 'Architecture        : %s\n' "${ARCH:-not detected}"
 printf 'Suggested volume    : %s\n' "$DEFAULT_VOLUME"
+printf 'Plex config root    : %s\n' "$DEFAULT_PLEX_SHARED_ROOT"
 printf '\nValues in brackets are defaults.\n'
 printf 'Press Enter to keep them. Human progress occasionally survives defaults.\n\n'
 
@@ -342,7 +334,7 @@ if [ -n "${STACK_JSON:-}" ]; then
     STACK_JSON="$(trim_trailing_slash "$STACK_JSON")"
     STACK_DIR="$(dirname "$STACK_JSON")"
 else
-    STACK_DIR="${STACK_DIR:-$(ask "Directory containing or intended to contain stack.json" "$DEFAULT_STACK_DIR")}" 
+    STACK_DIR="${STACK_DIR:-$(ask "SynoPlex configuration directory (/volumeX/PlexMediaServer)" "$DEFAULT_STACK_DIR")}" 
     STACK_DIR="$(trim_trailing_slash "$STACK_DIR")"
     STACK_JSON="$STACK_DIR/stack.json"
 fi
@@ -768,6 +760,7 @@ fi
 mkdir -p "$STACK_DIR" "$DECYPHARR_ROOT" "$DECYPHARR_MOUNT" "$DECYPHARR_DOWNLOADS"
 chmod 755 "$DECYPHARR_ROOT" "$DECYPHARR_MOUNT" 2>/dev/null || true
 chmod 775 "$DECYPHARR_DOWNLOADS" 2>/dev/null || true
+log "SynoPlex configuration root: $STACK_DIR"
 log "SynoPlex state and Decypharr directories created/verified"
 
 # Keep the Plex Watchlist state beside stack.json.
@@ -1898,4 +1891,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.3
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.4
