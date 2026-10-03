@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.7.2
+# Version 8.7.3
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -39,7 +39,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.7.2"
+SCRIPT_VERSION="8.7.3"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -48,7 +48,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.2$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.3$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -1976,10 +1976,671 @@ else
 fi
 
 if [ -f /etc/fuse.conf ]; then
-    grep -Eq '^[[:space:]]*user_allow_other[[:space:]]*$' /etc/fuse.conf || \
+    grep -Eq '^[[:space:]]*user_allow_other[[:space:]]*
+pkg_user() {
+    pkg="$1"
+    fallback="sc-$pkg"
+    privilege="/var/packages/$pkg/conf/privilege"
+    if [ -f "$privilege" ]; then
+        u="$(sed -n 's/.*"username"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$privilege" | head -1)"
+        if [ -n "$u" ]; then
+            printf '%s' "$u"
+            return 0
+        fi
+    fi
+    printf '%s' "$fallback"
+}
+
+acl_remove_user_entries() {
+    target="$1"
+    user="$2"
+    [ -x "$ACLTOOL" ] || return 0
+    [ -e "$target" ] || return 0
+
+    indexes="$(
+        "$ACLTOOL" -get "$target" 2>/dev/null |
+        awk -v needle="user:$user:" '
+            index($0, needle) {
+                gsub(/\[/, "", $1)
+                gsub(/\]/, "", $1)
+                print $1
+            }
+        ' | sort -rn
+    )"
+    for idx in $indexes; do
+        "$ACLTOOL" -del "$target" "$idx" >/dev/null 2>&1 || true
+    done
+}
+
+acl_set_ro() {
+    target="$1"
+    user="$2"
+    id "$user" >/dev/null 2>&1 || return 0
+    acl_remove_user_entries "$target" "$user"
+    "$ACLTOOL" -add "$target" "user:$user:allow:r-x---a-R-c--:fd--" >/dev/null 2>&1 || \
+        warn "Unable to apply read-only ACL: $user -> $target"
+}
+
+acl_set_file_ro() {
+    target="$1"
+    user="$2"
+    [ -n "$user" ] || return 0
+    id "$user" >/dev/null 2>&1 || return 0
+    acl_remove_user_entries "$target" "$user"
+    "$ACLTOOL" -add "$target" "user:$user:allow:r-----a-R-c--:---n" >/dev/null 2>&1 || \
+        warn "Unable to apply file read ACL: $user -> $target"
+}
+
+acl_set_rw() {
+    target="$1"
+    user="$2"
+    id "$user" >/dev/null 2>&1 || return 0
+    acl_remove_user_entries "$target" "$user"
+    "$ACLTOOL" -add "$target" "user:$user:allow:rwxpdDaARWc--:fd--" >/dev/null 2>&1 || \
+        warn "Unable to apply read/write ACL: $user -> $target"
+}
+
+if [ -x "$ACLTOOL" ]; then
+    PLEX_USER="PlexMediaServer"
+    RADARR_USER="$(pkg_user radarr)"
+    SONARR_USER="$(pkg_user sonarr)"
+    PROWLARR_USER="$(pkg_user prowlarr)"
+    QBIT_USER="$(pkg_user qbittorrent)"
+    BAZARR_USER="$(pkg_user bazarr)"
+    DECYPHARR_USER="$(pkg_user decypharr)"
+
+    # Ne jamais enfermer l'administrateur humain hors de stack.json.
+    # Adding service ACLs to a DSM directory can break inheritance
+    # from the parent, so explicitly reapply the selected stack.json
+    # owner's permissions on its directory.
+    acl_set_rw "$STACK_DIR" "$STACK_OWNER"
+
+    # Grant the configured n8n SMB account access to the selected state directory
+    # and read-only access to stack.json without exposing secrets to everyone.
+    if [ -n "$N8N_STACK_READER" ]; then
+        acl_set_ro "$STACK_DIR" "$N8N_STACK_READER"
+        acl_set_file_ro "$STACK_JSON" "$N8N_STACK_READER"
+    fi
+
+    acl_set_ro "$PLEXROOT" "$PLEX_USER"
+    acl_set_ro "$PLEX_LIBRARY_ROOT" "$PLEX_USER"
+    acl_set_ro "$MOVIES_ROOT" "$PLEX_USER"
+    acl_set_ro "$SERIES_ROOT" "$PLEX_USER"
+    acl_set_ro "$DECYPHARR_ROOT" "$PLEX_USER"
+    acl_set_ro "$DECYPHARR_MOUNT" "$PLEX_USER"
+
+    acl_set_ro "$PLEXROOT" "$RADARR_USER"
+    acl_set_rw "$MOVIES_ROOT" "$RADARR_USER"
+    # Radarr must be able to traverse PlexMediaServer/decypharr and read/write
+    # its own Decypharr category. Existing category directories may predate
+    # inherited ACLs, so apply permissions explicitly.
+    acl_set_ro "$STACK_DIR" "$RADARR_USER"
+    acl_set_ro "$DECYPHARR_ROOT" "$RADARR_USER"
+    acl_set_rw "$DECYPHARR_DOWNLOADS" "$RADARR_USER"
+    acl_set_rw "$DECYPHARR_DOWNLOADS/$RADARR_CATEGORY" "$RADARR_USER"
+    acl_set_ro "$DECYPHARR_MOUNT" "$RADARR_USER"
+
+    acl_set_ro "$PLEXROOT" "$SONARR_USER"
+    acl_set_rw "$SERIES_ROOT" "$SONARR_USER"
+    # Same rule for Sonarr and its own category directory.
+    acl_set_ro "$STACK_DIR" "$SONARR_USER"
+    acl_set_ro "$DECYPHARR_ROOT" "$SONARR_USER"
+    acl_set_rw "$DECYPHARR_DOWNLOADS" "$SONARR_USER"
+    acl_set_rw "$DECYPHARR_DOWNLOADS/$SONARR_CATEGORY" "$SONARR_USER"
+    acl_set_ro "$DECYPHARR_MOUNT" "$SONARR_USER"
+
+    # qBittorrent is kept as a fallback/manual download client.
+    # qBittorrent needs write access to its download tree, while Radarr and
+    # Sonarr must be able to read/write their own category directories so
+    # completed-download handling/imports can succeed.
+    acl_set_ro "$PLEXROOT" "$QBIT_USER"
+    acl_set_rw "$QBIT_DOWNLOADS" "$QBIT_USER"
+    acl_set_rw "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$QBIT_USER"
+    acl_set_rw "$QBIT_DOWNLOADS/$SONARR_CATEGORY" "$QBIT_USER"
+
+    acl_set_ro "$QBIT_DOWNLOADS" "$RADARR_USER"
+    acl_set_rw "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$RADARR_USER"
+
+    acl_set_ro "$QBIT_DOWNLOADS" "$SONARR_USER"
+    acl_set_rw "$QBIT_DOWNLOADS/$SONARR_CATEGORY" "$SONARR_USER"
+
+    # Bazarr must be able to write subtitles next to media files.
+    acl_set_ro "$PLEXROOT" "$BAZARR_USER"
+    acl_set_rw "$PLEX_LIBRARY_ROOT" "$BAZARR_USER"
+    acl_set_rw "$MOVIES_ROOT" "$BAZARR_USER"
+    acl_set_rw "$SERIES_ROOT" "$BAZARR_USER"
+
+    acl_set_rw "$DECYPHARR_ROOT" "$DECYPHARR_USER"
+    acl_set_rw "$DECYPHARR_MOUNT" "$DECYPHARR_USER"
+    acl_set_rw "$DECYPHARR_DOWNLOADS" "$DECYPHARR_USER"
+
+    log "DSM ACLs applied (stack.json: admin=$STACK_OWNER, n8n=${N8N_STACK_READER:-none})"
+else
+    warn "synoacltool was not found: DSM ACLs were not applied"
+fi
+
+# ---------------------------------------------------------------------------
+# Start Decypharr and test /version
+# ---------------------------------------------------------------------------
+
+if is_installed decypharr; then
+    synopkg restart decypharr >"$TMPBASE/restart-decypharr.log" 2>&1 || \
+        synopkg start decypharr >"$TMPBASE/start-decypharr.log" 2>&1 || true
+
+    i=0
+    while [ "$i" -lt 60 ]; do
+        if curl -fsS --max-time 3 "http://127.0.0.1:$DECYPHARR_PORT/version" >/dev/null 2>&1; then
+            log "Decypharr is responding on port $DECYPHARR_PORT"
+            break
+        fi
+        sleep 1
+        i=$((i + 1))
+    done
+
+    if [ "$i" -ge 60 ]; then
+        warn "Decypharr is not responding yet at http://127.0.0.1:$DECYPHARR_PORT/version"
+        warn "Consulte : $TMPBASE/restart-decypharr.log et $DECYPHARR_APPDATA/logs/"
+    fi
+fi
+
+# ---------------------------------------------------------------------------
+# Service integration
+#   Prowlarr -> Radarr + Sonarr (Full Sync)
+#   Radarr/Sonarr -> Decypharr (primary) + qBittorrent (fallback)
+#   Bazarr -> Radarr + Sonarr
+# ---------------------------------------------------------------------------
+
+if [ "$CONFIGURE_SERVICES" = "1" ]; then
+    for required_pkg in radarr sonarr prowlarr qbittorrent bazarr decypharr; do
+        if ! is_installed "$required_pkg"; then
+            err "Cannot interconnect stack: missing package $required_pkg"
+            exit 1
+        fi
+    done
+
+    [ -n "$RADARR_KEY" ] || { err "Radarr API key is unavailable."; exit 1; }
+    [ -n "$SONARR_KEY" ] || { err "Sonarr API key is unavailable."; exit 1; }
+    [ -n "$PROWLARR_KEY" ] || { err "Prowlarr API key is unavailable."; exit 1; }
+    [ -n "$BAZARR_KEY" ] || { err "Bazarr API key is unavailable."; exit 1; }
+    [ -n "$QBIT_USERNAME" ] || { err "qBittorrent username is empty."; exit 1; }
+    [ -n "$QBIT_PASSWORD" ] || { err "qBittorrent password is empty."; exit 1; }
+
+    export RADARR_URL="http://127.0.0.1:$RADARR_PORT"
+    export SONARR_URL="http://127.0.0.1:$SONARR_PORT"
+    export PROWLARR_URL="http://127.0.0.1:$PROWLARR_PORT"
+    export BAZARR_URL="http://127.0.0.1:$BAZARR_PORT"
+    export DECYPHARR_URL="http://127.0.0.1:$DECYPHARR_PORT"
+    export QBIT_URL="http://127.0.0.1:$QBIT_PORT"
+    export RADARR_ROOT="$MOVIES_ROOT"
+    export SONARR_ROOT="$SERIES_ROOT"
+    export RADARR_CATEGORY SONARR_CATEGORY
+    export RADARR_KEY SONARR_KEY PROWLARR_KEY BAZARR_KEY
+    export QBIT_USERNAME QBIT_PASSWORD
+
+    if ! "$PYTHON" <<'PY_INTEGRATE'
+import copy
+import json
+import os
+import urllib.error
+import urllib.parse
+import urllib.request
+
+RADARR = os.environ["RADARR_URL"].rstrip("/")
+SONARR = os.environ["SONARR_URL"].rstrip("/")
+PROWLARR = os.environ["PROWLARR_URL"].rstrip("/")
+BAZARR = os.environ["BAZARR_URL"].rstrip("/")
+DECYPHARR = os.environ["DECYPHARR_URL"].rstrip("/")
+QBIT = os.environ["QBIT_URL"].rstrip("/")
+
+RADARR_KEY = os.environ["RADARR_KEY"]
+SONARR_KEY = os.environ["SONARR_KEY"]
+PROWLARR_KEY = os.environ["PROWLARR_KEY"]
+BAZARR_KEY = os.environ["BAZARR_KEY"]
+QBIT_USERNAME = os.environ["QBIT_USERNAME"]
+QBIT_PASSWORD = os.environ["QBIT_PASSWORD"]
+
+RADARR_ROOT = os.environ["RADARR_ROOT"]
+SONARR_ROOT = os.environ["SONARR_ROOT"]
+RADARR_CATEGORY = os.environ.get("RADARR_CATEGORY", "radarr")
+SONARR_CATEGORY = os.environ.get("SONARR_CATEGORY", "sonarr")
+
+failures = []
+
+
+def api(base, key, method, path, payload=None, timeout=20):
+    url = base + path
+    body = None
+    headers = {"Accept": "application/json"}
+    if key:
+        headers["X-Api-Key"] = key
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode("utf-8", "replace")
+            return json.loads(raw) if raw.strip() else None
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        raise RuntimeError(f"{method} {url} -> HTTP {e.code}: {detail[:1000]}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"{method} {url} -> connection failed: {e.reason}") from e
+
+
+def set_field(provider, name, value):
+    wanted = name.lower()
+    for field in provider.get("fields", []):
+        if str(field.get("name", "")).lower() == wanted:
+            field["value"] = value
+            return True
+    return False
+
+
+def qbit_login():
+    data = urllib.parse.urlencode({
+        "username": QBIT_USERNAME,
+        "password": QBIT_PASSWORD,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        QBIT + "/api/v2/auth/login",
+        data=data,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Referer": QBIT + "/",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            cookie = response.headers.get("Set-Cookie", "")
+            body = response.read().decode("utf-8", "replace").strip()
+            status = int(getattr(response, "status", 200) or 200)
+            if body == "Fails.":
+                raise RuntimeError("qBittorrent login rejected: Fails.")
+            if status < 200 or status >= 300:
+                raise RuntimeError(f"qBittorrent login rejected: HTTP {status}")
+            # qBittorrent <= 5.1 returns 200 + "Ok."; qBittorrent 5.2+
+            # can return 204 No Content. Session cookie names may also evolve,
+            # so keep the full first cookie pair instead of assuming SID=.
+            return cookie.split(";", 1)[0] if cookie else ""
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace").strip()
+        raise RuntimeError(f"qBittorrent login rejected: HTTP {e.code} {detail}") from e
+
+
+def qbit_get(path, cookie):
+    req = urllib.request.Request(
+        QBIT + path,
+        headers={"Cookie": cookie, "Referer": QBIT + "/"},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=15) as response:
+        return response.read().decode("utf-8", "replace")
+
+
+def qbit_post(path, cookie, form):
+    data = urllib.parse.urlencode(form).encode("utf-8")
+    req = urllib.request.Request(
+        QBIT + path,
+        data=data,
+        headers={
+            "Cookie": cookie,
+            "Referer": QBIT + "/",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as response:
+        return response.read().decode("utf-8", "replace")
+
+
+def ensure_qbit_categories():
+    cookie = qbit_login()
+    raw = qbit_get("/api/v2/torrents/categories", cookie)
+    categories = json.loads(raw) if raw.strip() else {}
+    base = os.environ.get("QBIT_DOWNLOADS", "").rstrip("/")
+    for category in (RADARR_CATEGORY, SONARR_CATEGORY):
+        save_path = f"{base}/{category}" if base else ""
+        if category in categories:
+            qbit_post(
+                "/api/v2/torrents/editCategory",
+                cookie,
+                {"category": category, "savePath": save_path},
+            )
+            print(f"[OK] qBittorrent: updated category {category}")
+        else:
+            qbit_post(
+                "/api/v2/torrents/createCategory",
+                cookie,
+                {"category": category, "savePath": save_path},
+            )
+            print(f"[OK] qBittorrent: created category {category}")
+    return qbit_get("/api/v2/app/version", cookie)
+
+
+def ensure_root(base, key, root):
+    roots = api(base, key, "GET", "/api/v3/rootfolder") or []
+    target = root.rstrip("/")
+    if any(str(x.get("path", "")).rstrip("/") == target for x in roots):
+        return
+    api(base, key, "POST", "/api/v3/rootfolder", {"path": root})
+
+
+def qbit_schema(base, key):
+    schemas = api(base, key, "GET", "/api/v3/downloadclient/schema") or []
+    for schema in schemas:
+        impl = (str(schema.get("implementation", "")) + " " +
+                str(schema.get("implementationName", ""))).lower()
+        if "qbittorrent" in impl:
+            return schema
+    raise RuntimeError("qBittorrent download-client schema not found")
+
+
+def upsert_download_client(arr_name, base, key, schema, client_name, priority,
+                           host, port, category, username, password):
+    clients = api(base, key, "GET", "/api/v3/downloadclient") or []
+    existing = next(
+        (x for x in clients if str(x.get("name", "")).lower() == client_name.lower()),
+        None,
+    )
+
+    client = copy.deepcopy(existing if existing else schema)
+    if not existing:
+        client.pop("id", None)
+
+    client["name"] = client_name
+    client["enable"] = True
+    client["priority"] = priority
+    client["removeCompletedDownloads"] = True
+    client["removeFailedDownloads"] = False
+    client["tags"] = []
+
+    set_field(client, "host", host)
+    set_field(client, "port", int(port))
+    set_field(client, "useSsl", False)
+    set_field(client, "urlBase", "")
+    set_field(client, "apiKey", "")
+    set_field(client, "username", username)
+    set_field(client, "password", password)
+    set_field(client, "category", category)
+    set_field(client, "movieCategory", category)
+    set_field(client, "tvCategory", category)
+
+    if existing:
+        api(base, key, "PUT", f"/api/v3/downloadclient/{existing['id']}", client)
+        print(f"[OK] {arr_name}: updated download client {client_name}")
+    else:
+        api(base, key, "POST", "/api/v3/downloadclient", client)
+        print(f"[OK] {arr_name}: created download client {client_name}")
+
+
+def configure_arr(arr_name, base, key, root, category):
+    ensure_root(base, key, root)
+    schema = qbit_schema(base, key)
+
+    # Decypharr's qBittorrent-compatible authentication uses the calling
+    # Arr URL as username and the Arr API key as password.
+    upsert_download_client(
+        arr_name, base, key, schema,
+        "Decypharr", 1,
+        "127.0.0.1", int(urllib.parse.urlsplit(DECYPHARR).port or 8282),
+        category, base, key,
+    )
+
+    upsert_download_client(
+        arr_name, base, key, schema,
+        "qBittorrent", 10,
+        "127.0.0.1", int(urllib.parse.urlsplit(QBIT).port or 8080),
+        category, QBIT_USERNAME, QBIT_PASSWORD,
+    )
+
+    # Ask the Arr application to validate every configured download client.
+    api(base, key, "POST", "/api/v3/downloadclient/testall", {})
+    api(base, key, "GET", "/api/v3/system/status")
+    print(f"[OK] {arr_name}: download clients and API validated")
+
+
+def prowlarr_schema(implementation):
+    schemas = api(PROWLARR, PROWLARR_KEY, "GET", "/api/v1/applications/schema") or []
+    wanted = implementation.lower()
+    for schema in schemas:
+        impl = str(schema.get("implementation", "")).lower()
+        impl_name = str(schema.get("implementationName", "")).lower()
+        if impl == wanted or impl_name == wanted:
+            return schema
+    raise RuntimeError(f"Prowlarr application schema not found: {implementation}")
+
+
+def upsert_prowlarr_app(name, arr_url, arr_key):
+    schema = prowlarr_schema(name)
+    existing_apps = api(PROWLARR, PROWLARR_KEY, "GET", "/api/v1/applications") or []
+    existing = next(
+        (
+            x for x in existing_apps
+            if str(x.get("implementation", "")).lower() == name.lower()
+            or str(x.get("name", "")).lower() == name.lower()
+        ),
+        None,
+    )
+
+    app = copy.deepcopy(existing if existing else schema)
+    if not existing:
+        app.pop("id", None)
+
+    app["name"] = name
+    app["syncLevel"] = "fullSync"
+    app["tags"] = []
+
+    set_field(app, "prowlarrUrl", PROWLARR)
+    set_field(app, "baseUrl", arr_url)
+    set_field(app, "apiKey", arr_key)
+
+    if existing:
+        api(PROWLARR, PROWLARR_KEY, "PUT", f"/api/v1/applications/{existing['id']}", app)
+        print(f"[OK] Prowlarr: updated {name} application")
+    else:
+        api(PROWLARR, PROWLARR_KEY, "POST", "/api/v1/applications", app)
+        print(f"[OK] Prowlarr: created {name} application")
+
+
+def bazarr_request(method, path, form=None):
+    url = BAZARR + path
+    body = None
+    headers = {"X-API-KEY": BAZARR_KEY, "Accept": "application/json"}
+    if form is not None:
+        body = urllib.parse.urlencode(form).encode("utf-8")
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            raw = response.read().decode("utf-8", "replace")
+            if not raw.strip():
+                return None
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return raw
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        raise RuntimeError(f"{method} {url} -> HTTP {e.code}: {detail[:1000]}") from e
+
+
+def configure_bazarr():
+    form = {
+        "settings-general-use_sonarr": "true",
+        "settings-sonarr-ip": "127.0.0.1",
+        "settings-sonarr-port": str(urllib.parse.urlsplit(SONARR).port or 8989),
+        "settings-sonarr-base_url": "/",
+        "settings-sonarr-ssl": "false",
+        "settings-sonarr-apikey": SONARR_KEY,
+        "settings-general-use_radarr": "true",
+        "settings-radarr-ip": "127.0.0.1",
+        "settings-radarr-port": str(urllib.parse.urlsplit(RADARR).port or 7878),
+        "settings-radarr-base_url": "/",
+        "settings-radarr-ssl": "false",
+        "settings-radarr-apikey": RADARR_KEY,
+    }
+    bazarr_request("POST", "/api/system/settings", form)
+    settings = bazarr_request("GET", "/api/system/settings")
+    if not isinstance(settings, dict):
+        raise RuntimeError("Bazarr settings API did not return JSON after configuration")
+    print("[OK] Bazarr: Radarr and Sonarr integrations configured")
+
+
+for label, func in (
+    ("qBittorrent", ensure_qbit_categories),
+    ("Radarr", lambda: configure_arr("Radarr", RADARR, RADARR_KEY, RADARR_ROOT, RADARR_CATEGORY)),
+    ("Sonarr", lambda: configure_arr("Sonarr", SONARR, SONARR_KEY, SONARR_ROOT, SONARR_CATEGORY)),
+    ("Prowlarr/Radarr", lambda: upsert_prowlarr_app("Radarr", RADARR, RADARR_KEY)),
+    ("Prowlarr/Sonarr", lambda: upsert_prowlarr_app("Sonarr", SONARR, SONARR_KEY)),
+    ("Bazarr", configure_bazarr),
+):
+    try:
+        result = func()
+        if label == "qBittorrent":
+            print(f"[OK] qBittorrent: API authenticated, version={str(result).strip()}")
+    except Exception as exc:
+        failures.append(f"{label}: {exc}")
+        print(f"[ERROR] {label}: {exc}")
+
+if not failures:
+    try:
+        api(PROWLARR, PROWLARR_KEY, "POST", "/api/v1/applications/testall", {})
+        print("[OK] Prowlarr: application tests completed")
+    except Exception as exc:
+        failures.append(f"Prowlarr tests: {exc}")
+        print(f"[ERROR] Prowlarr tests: {exc}")
+
+if not failures:
+    try:
+        api(
+            PROWLARR,
+            PROWLARR_KEY,
+            "POST",
+            "/api/v1/command",
+            {"name": "ApplicationIndexerSync"},
+        )
+        print("[OK] Prowlarr: indexer synchronization requested")
+    except Exception as exc:
+        # The applications are already connected; command naming may differ
+        # across Prowlarr versions, so report this as a warning only.
+        print(f"[WARN] Prowlarr: unable to trigger immediate indexer sync: {exc}")
+
+if failures:
+    print("")
+    print("Service integration failures:")
+    for failure in failures:
+        print(" - " + failure)
+    raise SystemExit(1)
+
+print("")
+print("[OK] SynoPlex service integration complete")
+PY_INTEGRATE
+    then
+        err "Service interconnection failed. The bootstrap will not report a successful deployment."
+        exit 1
+    fi
+
+    log "Prowlarr, Radarr, Sonarr, Bazarr, Decypharr and qBittorrent are interconnected"
+fi
+
+# ---------------------------------------------------------------------------
+# Rapport
+# ---------------------------------------------------------------------------
+
+printf '\n============================================================\n'
+printf '   SYNOPLEX FULL STACK - REPORT\n'
+printf '============================================================\n'
+printf 'NAS                 : %s\n' "$NAS_IP"
+printf 'Plex                : http://%s:%s/web\n' "$NAS_IP" "$PLEX_PORT"
+printf 'Radarr              : http://%s:%s\n' "$NAS_IP" "$RADARR_PORT"
+printf 'Sonarr              : http://%s:%s\n' "$NAS_IP" "$SONARR_PORT"
+printf 'Prowlarr            : http://%s:%s\n' "$NAS_IP" "$PROWLARR_PORT"
+printf 'qBittorrent         : http://%s:%s\n' "$NAS_IP" "$QBIT_PORT"
+printf 'Bazarr              : http://%s:%s\n' "$NAS_IP" "$BAZARR_PORT"
+printf 'Decypharr           : http://%s:%s\n' "$NAS_IP" "$DECYPHARR_PORT"
+printf 'API locale Radarr   : http://127.0.0.1:%s\n' "$RADARR_PORT"
+printf 'API locale Sonarr   : http://127.0.0.1:%s\n' "$SONARR_PORT"
+printf 'Radarr category     : %s\n' "$RADARR_CATEGORY"
+printf 'Sonarr category     : %s\n' "$SONARR_CATEGORY"
+printf 'Service integration : %s\n' "$CONFIGURE_SERVICES"
+printf 'Integration graph   : Prowlarr -> Radarr/Sonarr; Bazarr -> Radarr/Sonarr\n'
+printf 'Download clients    : Decypharr priority 1; qBittorrent priority 10\n'
+printf '\n'
+printf 'Movies              : %s\n' "$MOVIES_ROOT"
+printf 'Series              : %s\n' "$SERIES_ROOT"
+printf 'Decypharr mount     : %s\n' "$DECYPHARR_MOUNT"
+printf 'Decypharr downloads : %s\n' "$DECYPHARR_DOWNLOADS"
+printf 'qBittorrent downloads: %s\n' "$QBIT_DOWNLOADS"
+printf 'Decypharr config    : %s\n' "$DECYPHARR_CONFIG"
+printf 'Source of truth     : %s\n' "$STACK_JSON"
+printf 'Watchlist state     : %s\n' "$WATCHLIST_STATE"
+printf 'n8n config mount    : PlexMediaServer -> %s\n' "$N8N_CONFIG_ROOT"
+printf 'n8n media mount     : media root -> %s\n' "$N8N_MEDIA_ROOT"
+printf 'stack.json owner    : %s:%s (0600 + ACL)\n' "$STACK_OWNER" "$STACK_GROUP"
+printf 'n8n stack reader    : %s\n' "${N8N_STACK_READER:-none}"
+if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'Boot sync           : %s\n' "$DECYPHARR_BOOT_SYNC"; else printf 'Boot sync           : disabled\n'; fi
+printf '\n'
+
+for pkg in PlexMediaServer radarr sonarr prowlarr qbittorrent bazarr decypharr; do
+    if is_installed "$pkg"; then
+        printf '  %-18s INSTALLE  ' "$pkg"
+        synopkg status "$pkg" 2>/dev/null | tr '\n' ' '
+        printf '\n'
+    else
+        printf '  %-18s MISSING\n' "$pkg"
+    fi
+done
+
+if [ -n "$FAILED" ]; then
+    printf '\n'
+    warn "Components still failing:$FAILED"
+    warn "Diagnostics : $TMPBASE"
+fi
+
+printf '\nUseful checks:\n'
+printf '  curl http://127.0.0.1:%s/version\n' "$DECYPHARR_PORT"
+printf '  curl -s http://127.0.0.1:%s/api/arrs | python3 -m json.tool\n' "$DECYPHARR_PORT"
+printf '  synogetkeyvalue /etc.defaults/synoinfo.conf unique\n'
+printf '  synopkg status decypharr\n'
+printf '  synopkg status radarr\n'
+printf '  synopkg status sonarr\n'
+printf '  synopkg status prowlarr\n'
+printf '  synopkg status qbittorrent\n'
+printf '  synopkg status bazarr\n'
+printf '  tail -100 %s/stack-sync.log\n' "$DECYPHARR_APPDATA"
+printf '\n'
+printf 'Important: stack.json remains the configuration source of truth.\n'
+if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
+
+printf '============================================================\n'
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.3
+ /etc/fuse.conf || \
         printf '\nuser_allow_other\n' >> /etc/fuse.conf
 else
     printf 'user_allow_other\n' > /etc/fuse.conf 2>/dev/null || true
+fi
+
+# Older Decypharr SPKs require the package-local FUSE helpers to be restored
+# to root:root 4755 after install/upgrade. Newer SPKs do this themselves, but
+# keep the bootstrap repair for backward compatibility with already-installed
+# packages.
+if [ -d /var/packages/decypharr/target ]; then
+    [ -d /var/packages/decypharr/target/etc ] && \
+        chmod 0755 /var/packages/decypharr/target/etc 2>/dev/null || true
+    [ -f /var/packages/decypharr/target/etc/fuse.conf ] && \
+        chmod 0644 /var/packages/decypharr/target/etc/fuse.conf 2>/dev/null || true
+
+    for fuse_helper in \
+        /var/packages/decypharr/target/bin/fusermount \
+        /var/packages/decypharr/target/bin/fusermount3
+    do
+        [ -f "$fuse_helper" ] || continue
+        chown root:root "$fuse_helper" 2>/dev/null || true
+        chmod 4755 "$fuse_helper" 2>/dev/null || true
+    done
+    log "Decypharr package-local FUSE helpers verified"
 fi
 
 pkg_user() {
@@ -2620,4 +3281,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.2
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.3
