@@ -1291,7 +1291,8 @@ fi
 # ---------------------------------------------------------------------------
 
 export STACK_JSON NAS_IP RADARR_PORT SONARR_PORT PROWLARR_PORT QBIT_PORT BAZARR_PORT PLEX_PORT DECYPHARR_PORT
-export RADARR_KEY SONARR_KEY PROWLARR_KEY DECYPHARR_MOUNT DECYPHARR_DOWNLOADS QBIT_DOWNLOADS
+export RADARR_KEY SONARR_KEY PROWLARR_KEY BAZARR_KEY DECYPHARR_MOUNT DECYPHARR_DOWNLOADS QBIT_DOWNLOADS
+export QBIT_USERNAME QBIT_PASSWORD
 export MOVIES_ROOT SERIES_ROOT MEDIA_ROOT ALLDEBRID_API_KEY RADARR_CATEGORY SONARR_CATEGORY WATCHLIST_STATE
 export STACK_DIR N8N_CONFIG_ROOT N8N_MEDIA_ROOT
 
@@ -1339,10 +1340,15 @@ if os.environ.get("PROWLARR_KEY"):
 qbittorrent = obj("qbittorrent")
 qbittorrent["url"] = f"http://{nas}:{os.environ['QBIT_PORT']}"
 qbittorrent["download_folder"] = os.environ["QBIT_DOWNLOADS"]
+qbittorrent["username"] = os.environ.get("QBIT_USERNAME", "")
+if os.environ.get("QBIT_PASSWORD"):
+    qbittorrent["password"] = os.environ["QBIT_PASSWORD"]
 qbittorrent.setdefault("role", "fallback_manual")
 
 bazarr = obj("bazarr")
 bazarr["url"] = f"http://{nas}:{os.environ['BAZARR_PORT']}"
+if os.environ.get("BAZARR_KEY"):
+    bazarr["api_key"] = os.environ["BAZARR_KEY"]
 
 decy = obj("decypharr")
 decy.update({
