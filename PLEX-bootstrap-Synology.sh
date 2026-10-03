@@ -31,8 +31,10 @@
 #   DECYPHARR_APPDATA=/var/packages/decypharr/var
 #   RADARR_PORT=7878 SONARR_PORT=8989 PLEX_PORT=32400 DECYPHARR_PORT=8282
 #   RADARR_CATEGORY=radarr SONARR_CATEGORY=sonarr
+#   QBIT_USERNAME=synoplex
+#   QBIT_PASSWORD=...            # optional; generated securely when omitted
 #   INSTALL_PLEX=1 INSTALL_RADARR=1 INSTALL_SONARR=1 INSTALL_DECYPHARR=1
-#   CONFIGURE_ARRS=1 INSTALL_BOOT_SYNC=1
+#   CONFIGURE_SERVICES=1 INSTALL_BOOT_SYNC=1
 #   DECYPHARR_SPK=/path/to/decypharr-....spk
 #   ALLDEBRID_API_KEY=...   # only if stack.json does not exist or does not contain the key yet
 #
@@ -418,8 +420,10 @@ PROWLARR_PORT="${PROWLARR_PORT:-$(ask "Prowlarr port" "$DETECTED_PROWLARR_PORT")
 QBIT_PORT="${QBIT_PORT:-$(ask "qBittorrent port" "$DETECTED_QBIT_PORT")}" 
 BAZARR_PORT="${BAZARR_PORT:-$(ask "Bazarr port" "6767")}" 
 DECYPHARR_PORT="${DECYPHARR_PORT:-$(ask "Decypharr port" "8282")}" 
-RADARR_CATEGORY="${RADARR_CATEGORY:-$(ask "Decypharr category used by Radarr" "radarr")}" 
-SONARR_CATEGORY="${SONARR_CATEGORY:-$(ask "Decypharr category used by Sonarr" "sonarr")}" 
+RADARR_CATEGORY="${RADARR_CATEGORY:-$(ask "Download category used by Radarr" "radarr")}" 
+SONARR_CATEGORY="${SONARR_CATEGORY:-$(ask "Download category used by Sonarr" "sonarr")}" 
+QBIT_USERNAME="${QBIT_USERNAME:-synoplex}"
+QBIT_PASSWORD="${QBIT_PASSWORD:-}"
 
 INSTALL_PLEX="${INSTALL_PLEX:-$(ask_yes_no "Install Plex if missing" "1")}" 
 INSTALL_RADARR="${INSTALL_RADARR:-$(ask_yes_no "Install Radarr if missing" "1")}" 
@@ -428,7 +432,7 @@ INSTALL_PROWLARR="${INSTALL_PROWLARR:-$(ask_yes_no "Install Prowlarr if missing"
 INSTALL_QBIT="${INSTALL_QBIT:-$(ask_yes_no "Install qBittorrent if missing" "1")}" 
 INSTALL_BAZARR="${INSTALL_BAZARR:-$(ask_yes_no "Install Bazarr if missing" "1")}" 
 INSTALL_DECYPHARR="${INSTALL_DECYPHARR:-$(ask_yes_no "Install Decypharr if missing" "1")}" 
-CONFIGURE_ARRS="${CONFIGURE_ARRS:-$(ask_yes_no "Automatically configure Radarr/Sonarr to use Decypharr" "1")}" 
+CONFIGURE_SERVICES="${CONFIGURE_SERVICES:-${CONFIGURE_SERVICES:-$(ask_yes_no "Automatically interconnect Prowlarr, Radarr, Sonarr, Bazarr, Decypharr and qBittorrent" "1")}}" 
 INSTALL_BOOT_SYNC="${INSTALL_BOOT_SYNC:-$(ask_yes_no "Resynchronize Decypharr from stack.json at every DSM boot" "1")}" 
 
 validate_abs_path() {
@@ -545,7 +549,8 @@ printf 'Decypharr appdata    : %s\n' "$DECYPHARR_APPDATA"
 printf 'Ports                : Plex=%s Radarr=%s Sonarr=%s Prowlarr=%s qBit=%s Bazarr=%s Decypharr=%s\n' "$PLEX_PORT" "$RADARR_PORT" "$SONARR_PORT" "$PROWLARR_PORT" "$QBIT_PORT" "$BAZARR_PORT" "$DECYPHARR_PORT"
 printf 'Categories           : Radarr=%s Sonarr=%s\n' "$RADARR_CATEGORY" "$SONARR_CATEGORY"
 printf 'Installation         : Plex=%s Radarr=%s Sonarr=%s Prowlarr=%s qBit=%s Bazarr=%s Decypharr=%s\n' "$INSTALL_PLEX" "$INSTALL_RADARR" "$INSTALL_SONARR" "$INSTALL_PROWLARR" "$INSTALL_QBIT" "$INSTALL_BAZARR" "$INSTALL_DECYPHARR"
-printf 'Auto-config *Arr     : %s\n' "$CONFIGURE_ARRS"
+printf 'Interconnect stack  : %s\n' "$CONFIGURE_SERVICES"
+printf 'qBittorrent user    : %s\n' "$QBIT_USERNAME"
 printf 'Boot sync            : %s\n' "$INSTALL_BOOT_SYNC"
 printf '%s\n' '------------------------------------------------------------'
 
@@ -1723,7 +1728,7 @@ fi
 # Automatically configure Radarr/Sonarr to use Decypharr
 # ---------------------------------------------------------------------------
 
-if [ "$CONFIGURE_ARRS" = "1" ] && is_installed decypharr; then
+if [ "$CONFIGURE_SERVICES" = "1" ] && is_installed decypharr; then
     export DECYPHARR_HOST="$NAS_IP"
     export RADARR_URL="http://127.0.0.1:$RADARR_PORT"
     export SONARR_URL="http://127.0.0.1:$SONARR_PORT"
