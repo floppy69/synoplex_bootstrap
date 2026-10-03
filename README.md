@@ -179,7 +179,11 @@ Run the bootstrap:
 
 ## Interactive configuration
 
-The bootstrap asks for the NAS address, directories, ports, installation choices, and ownership settings.
+On a first installation, the bootstrap asks for the NAS address, media/configuration roots, ports, missing packages, and ownership settings.
+
+When an existing `stack.json` is detected in the SynoPlex configuration root, the bootstrap automatically switches to **reconcile mode**. In reconcile mode it reuses deployment paths, n8n mappings, service endpoints, qBittorrent credentials, Decypharr paths and categories from `stack.json` instead of asking for them again. The existing stack owner is reused, and the n8n SMB reader is reused from `stack.json` or, for older deployments, detected from the DSM ACL when unambiguous.
+
+Installed Plex/Radarr/Sonarr/Prowlarr/qBittorrent/Bazarr/Decypharr packages are always reused. Installation questions are only shown for missing packages.
 
 New-install defaults on the reference volume are:
 
