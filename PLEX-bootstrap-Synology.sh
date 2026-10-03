@@ -2246,6 +2246,7 @@ import copy
 import json
 import os
 import socket
+import stat
 import time
 import urllib.error
 import urllib.parse
