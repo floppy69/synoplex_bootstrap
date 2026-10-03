@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.7.9
+# Version 8.8.0
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -39,7 +39,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.7.9"
+SCRIPT_VERSION="8.8.0"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -48,7 +48,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.9$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.8.0$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -1579,16 +1579,21 @@ plex["url"] = f"http://{nas}:{os.environ['PLEX_PORT']}"
 
 radarr = obj("radarr")
 radarr["url"] = f"http://{nas}:{os.environ['RADARR_PORT']}"
+radarr["quality_profile_name"] = "AUTO Movies - 2160p > 1080p > 720p"
+radarr["minimum_seeders"] = 11
 if os.environ.get("RADARR_KEY"):
     radarr["api_key"] = os.environ["RADARR_KEY"]
 
 sonarr = obj("sonarr")
 sonarr["url"] = f"http://{nas}:{os.environ['SONARR_PORT']}"
+sonarr["quality_profile_name"] = "AUTO Series - 2160p > 1080p > 720p"
+sonarr["minimum_seeders"] = 11
 if os.environ.get("SONARR_KEY"):
     sonarr["api_key"] = os.environ["SONARR_KEY"]
 
 prowlarr = obj("prowlarr")
 prowlarr["url"] = f"http://{nas}:{os.environ['PROWLARR_PORT']}"
+prowlarr["app_minimum_seeders"] = 11
 if os.environ.get("PROWLARR_KEY"):
     prowlarr["api_key"] = os.environ["PROWLARR_KEY"]
 
@@ -2436,6 +2441,203 @@ def upsert_download_client(arr_name, base, key, schema, client_name, priority,
         print(f"[OK] {arr_name}: created download client {client_name}")
 
 
+
+STRICT_RADARR_PROFILE = "AUTO Movies - 2160p > 1080p > 720p"
+STRICT_SONARR_PROFILE = "AUTO Series - 2160p > 1080p > 720p"
+MIN_SEEDERS = 11
+
+
+def persist_stack_policy(radarr_profile_id=None, sonarr_profile_id=None):
+    stack_path = os.environ.get("STACK_JSON", "")
+    if not stack_path or not os.path.isfile(stack_path):
+        return
+    try:
+        with open(stack_path, "r", encoding="utf-8") as fh:
+            stack = json.load(fh)
+        if not isinstance(stack, dict):
+            return
+        stack.setdefault("radarr", {})["minimum_seeders"] = MIN_SEEDERS
+        stack.setdefault("sonarr", {})["minimum_seeders"] = MIN_SEEDERS
+        stack.setdefault("prowlarr", {})["app_minimum_seeders"] = MIN_SEEDERS
+        stack["radarr"]["quality_profile_name"] = STRICT_RADARR_PROFILE
+        stack["sonarr"]["quality_profile_name"] = STRICT_SONARR_PROFILE
+        if radarr_profile_id:
+            stack["radarr"]["quality_profile_id"] = int(radarr_profile_id)
+        if sonarr_profile_id:
+            stack["sonarr"]["quality_profile_id"] = int(sonarr_profile_id)
+        tmp = stack_path + ".policy.tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(stack, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        st = os.stat(stack_path)
+        os.chmod(tmp, stat.S_IMODE(st.st_mode))
+        try:
+            os.chown(tmp, st.st_uid, st.st_gid)
+        except PermissionError:
+            pass
+        os.replace(tmp, stack_path)
+    except Exception as exc:
+        print(f"[WARN] Unable to persist Arr policy IDs to stack.json: {exc}")
+
+
+def release_title_format_template(base, key):
+    formats = api(base, key, "GET", "/api/v3/customformat") or []
+    for custom_format in formats:
+        for spec in custom_format.get("specifications", []):
+            if str(spec.get("implementation", "")) == "ReleaseTitleSpecification":
+                return formats, custom_format
+    return formats, None
+
+
+def upsert_release_title_format(base, key, name, pattern):
+    formats, template = release_title_format_template(base, key)
+    existing = next((x for x in formats if str(x.get("name", "")) == name), None)
+    if existing:
+        item = copy.deepcopy(existing)
+    elif template:
+        item = copy.deepcopy(template)
+        item.pop("id", None)
+        item["name"] = name
+        item["includeCustomFormatWhenRenaming"] = False
+    else:
+        raise RuntimeError(f"No ReleaseTitle custom-format template is available for {name}")
+
+    specs = item.get("specifications") or []
+    if not specs:
+        raise RuntimeError(f"Custom format {name} has no specification")
+    spec = specs[0]
+    spec["name"] = name
+    field = next((f for f in spec.get("fields", []) if f.get("name") == "value"), None)
+    if not field:
+        raise RuntimeError(f"Custom format {name} has no regex value field")
+    field["value"] = pattern
+
+    if existing:
+        return api(base, key, "PUT", f"/api/v3/customformat/{existing['id']}", item)
+    return api(base, key, "POST", "/api/v3/customformat", item)
+
+
+def ensure_format_score(profile, custom_format, score):
+    items = profile.setdefault("formatItems", [])
+    format_id = int(custom_format["id"])
+    entry = next((x for x in items if int(x.get("format", -1)) == format_id), None)
+    if entry is None:
+        items.append({
+            "format": format_id,
+            "name": custom_format["name"],
+            "score": int(score),
+        })
+    else:
+        entry["name"] = custom_format["name"]
+        entry["score"] = int(score)
+
+
+def ensure_strict_arr_profile(arr_name, base, key, profile_name):
+    profiles = api(base, key, "GET", "/api/v3/qualityprofile") or []
+    profile = next((x for x in profiles if str(x.get("name", "")) == profile_name), None)
+    if not profile:
+        print(f"[WARN] {arr_name}: strict quality profile not found: {profile_name}")
+        return None
+
+    backslash = "\\"
+    boundary = lambda value: backslash + "b" + value + backslash + "b"
+    french = "(VFF|TRUEFRENCH|VF2|VFI|VOF|FRENCH|FRE|FRFR|FR)"
+    cf_vff = upsert_release_title_format(base, key, "AUTO FR - VFF", boundary(french))
+    cf_multi = upsert_release_title_format(
+        base,
+        key,
+        "AUTO FR - MULTi",
+        "(?:" + boundary("MULTI") + ".*?" + boundary(french) +
+        "|" + boundary(french) + ".*?" + boundary("MULTI") + ")",
+    )
+    cf_vost = upsert_release_title_format(base, key, "AUTO FR - VOSTFR", boundary("VOSTFR"))
+    cf_vfq = upsert_release_title_format(
+        base,
+        key,
+        "AUTO FR - REJECT VFQ",
+        boundary("(VFQ|FRENCH[ ._-]?CANADIAN|CANADIAN[ ._-]?FRENCH)"),
+    )
+
+    profile["minFormatScore"] = 100
+    ensure_format_score(profile, cf_vff, 300)
+    ensure_format_score(profile, cf_multi, 200)
+    ensure_format_score(profile, cf_vost, 100)
+    ensure_format_score(profile, cf_vfq, -10000)
+    profile = api(base, key, "PUT", f"/api/v3/qualityprofile/{profile['id']}", profile)
+
+    endpoint = "/api/v3/movie" if arr_name == "Radarr" else "/api/v3/series"
+    media = api(base, key, "GET", endpoint) or []
+    changed = 0
+    for item in media:
+        if int(item.get("qualityProfileId") or 0) == int(profile["id"]):
+            continue
+        item["qualityProfileId"] = int(profile["id"])
+        api(base, key, "PUT", f"{endpoint}/{item['id']}", item)
+        changed += 1
+
+    print(
+        f"[OK] {arr_name}: strict French profile {profile['id']} active; "
+        f"{changed} existing item(s) migrated"
+    )
+    return int(profile["id"])
+
+
+def reconcile_indexer_minimum_seeders(label, base, key, api_version, field_name):
+    indexers = api(base, key, "GET", f"/api/{api_version}/indexer") or []
+    updated = 0
+    warnings = 0
+    for indexer in indexers:
+        field = next(
+            (f for f in indexer.get("fields", []) if str(f.get("name", "")) == field_name),
+            None,
+        )
+        if field is None or int(field.get("value") or 0) == MIN_SEEDERS:
+            continue
+        field["value"] = MIN_SEEDERS
+        try:
+            api(
+                base,
+                key,
+                "PUT",
+                f"/api/{api_version}/indexer/{indexer['id']}?forceSave=true",
+                indexer,
+                timeout=5,
+            )
+            updated += 1
+        except Exception as exc:
+            warnings += 1
+            print(f"[WARN] {label}: unable to update {indexer.get('name')}: {exc}")
+    print(
+        f"[OK] {label}: minimum seeders policy={MIN_SEEDERS}; "
+        f"updated={updated}; warnings={warnings}"
+    )
+
+
+def configure_release_policy():
+    radarr_profile_id = ensure_strict_arr_profile(
+        "Radarr", RADARR, RADARR_KEY, STRICT_RADARR_PROFILE
+    )
+    sonarr_profile_id = ensure_strict_arr_profile(
+        "Sonarr", SONARR, SONARR_KEY, STRICT_SONARR_PROFILE
+    )
+
+    reconcile_indexer_minimum_seeders(
+        "Prowlarr", PROWLARR, PROWLARR_KEY, "v1",
+        "torrentBaseSettings.appMinimumSeeders",
+    )
+    reconcile_indexer_minimum_seeders(
+        "Radarr", RADARR, RADARR_KEY, "v3", "minimumSeeders"
+    )
+    reconcile_indexer_minimum_seeders(
+        "Sonarr", SONARR, SONARR_KEY, "v3", "minimumSeeders"
+    )
+
+    persist_stack_policy(radarr_profile_id, sonarr_profile_id)
+    return radarr_profile_id, sonarr_profile_id
+
+
 def configure_arr(arr_name, base, key, root, category):
     ensure_root(base, key, root)
     schema = qbit_schema(base, key)
@@ -2623,6 +2825,7 @@ for label, func in (
     ("Sonarr", lambda: configure_arr("Sonarr", SONARR, SONARR_KEY, SONARR_ROOT, SONARR_CATEGORY)),
     ("Prowlarr/Radarr", lambda: upsert_prowlarr_app("Radarr", RADARR, RADARR_KEY)),
     ("Prowlarr/Sonarr", lambda: upsert_prowlarr_app("Sonarr", SONARR, SONARR_KEY)),
+    ("Release policy", configure_release_policy),
     ("Bazarr", configure_bazarr),
 ):
     try:
@@ -2744,4 +2947,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.9
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.8.0
