@@ -432,7 +432,7 @@ INSTALL_PROWLARR="${INSTALL_PROWLARR:-$(ask_yes_no "Install Prowlarr if missing"
 INSTALL_QBIT="${INSTALL_QBIT:-$(ask_yes_no "Install qBittorrent if missing" "1")}" 
 INSTALL_BAZARR="${INSTALL_BAZARR:-$(ask_yes_no "Install Bazarr if missing" "1")}" 
 INSTALL_DECYPHARR="${INSTALL_DECYPHARR:-$(ask_yes_no "Install Decypharr if missing" "1")}" 
-CONFIGURE_SERVICES="${CONFIGURE_SERVICES:-${CONFIGURE_SERVICES:-$(ask_yes_no "Automatically interconnect Prowlarr, Radarr, Sonarr, Bazarr, Decypharr and qBittorrent" "1")}}" 
+CONFIGURE_SERVICES="${CONFIGURE_SERVICES:-${CONFIGURE_ARRS:-$(ask_yes_no "Automatically interconnect Prowlarr, Radarr, Sonarr, Bazarr, Decypharr and qBittorrent" "1")}}" 
 INSTALL_BOOT_SYNC="${INSTALL_BOOT_SYNC:-$(ask_yes_no "Resynchronize Decypharr from stack.json at every DSM boot" "1")}" 
 
 validate_abs_path() {
@@ -1129,6 +1129,153 @@ wait_for_api_key() {
 RADARR_KEY="$(wait_for_api_key radarr 2>/dev/null || true)"
 SONARR_KEY="$(wait_for_api_key sonarr 2>/dev/null || true)"
 PROWLARR_KEY="$(wait_for_api_key prowlarr 2>/dev/null || true)"
+
+find_bazarr_config() {
+    cfg=""
+    if [ -d /var/packages/bazarr/var ]; then
+        cfg="$(find /var/packages/bazarr/var -type f -name config.yaml 2>/dev/null | head -1)"
+    fi
+    if [ -z "$cfg" ]; then
+        for appdata in /volume*/@appdata/bazarr; do
+            [ -d "$appdata" ] || continue
+            cfg="$(find "$appdata" -type f -name config.yaml 2>/dev/null | head -1)"
+            [ -n "$cfg" ] && break
+        done
+    fi
+    printf '%s' "$cfg"
+}
+
+get_bazarr_api_key() {
+    cfg="$(find_bazarr_config)"
+    [ -n "$cfg" ] || return 1
+    "$PYTHON" - "$cfg" <<'PY_BAZARR_KEY'
+import re, sys
+text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+m = re.search(r'(?ms)^auth:\s*\n(?:(?:^[ \t]+.*\n))*?^[ \t]+apikey:\s*["\']?([^"\'\n#]+)', text)
+if m:
+    print(m.group(1).strip())
+PY_BAZARR_KEY
+}
+
+BAZARR_KEY=""
+if is_installed bazarr; then
+    i=0
+    while [ "$i" -lt 45 ]; do
+        BAZARR_KEY="$(get_bazarr_api_key 2>/dev/null || true)"
+        [ -n "$BAZARR_KEY" ] && break
+        sleep 1
+        i=$((i + 1))
+    done
+fi
+
+if [ "$CONFIGURE_SERVICES" = "1" ] && is_installed qbittorrent; then
+    if [ -z "$QBIT_PASSWORD" ]; then
+        QBIT_PASSWORD="$("$PYTHON" - <<'PY_QBIT_PASSWORD'
+import secrets
+print(secrets.token_urlsafe(24))
+PY_QBIT_PASSWORD
+)"
+    fi
+
+    QBIT_CONFIG=""
+    if [ -d /var/packages/qbittorrent/var ]; then
+        QBIT_CONFIG="$(find /var/packages/qbittorrent/var -type f -name qBittorrent.conf 2>/dev/null | head -1)"
+    fi
+    if [ -z "$QBIT_CONFIG" ]; then
+        for appdata in /volume*/@appdata/qbittorrent; do
+            [ -d "$appdata" ] || continue
+            QBIT_CONFIG="$(find "$appdata" -type f -name qBittorrent.conf 2>/dev/null | head -1)"
+            [ -n "$QBIT_CONFIG" ] && break
+        done
+    fi
+
+    if [ -z "$QBIT_CONFIG" ]; then
+        warn "qBittorrent configuration file was not found; automatic client integration may fail."
+    else
+        synopkg stop qbittorrent >"$TMPBASE/stop-qbittorrent.log" 2>&1 || true
+        export QBIT_CONFIG QBIT_USERNAME QBIT_PASSWORD QBIT_PORT QBIT_DOWNLOADS
+        "$PYTHON" <<'PY_QBIT_CONFIG'
+import base64, hashlib, os, re, secrets
+
+path = os.environ["QBIT_CONFIG"]
+username = os.environ["QBIT_USERNAME"]
+password = os.environ["QBIT_PASSWORD"]
+port = str(int(os.environ["QBIT_PORT"]))
+download_folder = os.environ["QBIT_DOWNLOADS"].rstrip("/") + "/"
+
+salt = secrets.token_bytes(16)
+digest = hashlib.pbkdf2_hmac("sha512", password.encode("utf-8"), salt, 100000, dklen=64)
+secret = base64.b64encode(salt).decode() + ":" + base64.b64encode(digest).decode()
+
+with open(path, "r", encoding="utf-8", errors="replace") as f:
+    lines = f.read().splitlines()
+
+updates = {
+    r"WebUI\Username": username,
+    r"WebUI\Password_PBKDF2": f'"@ByteArray({secret})"',
+    r"WebUI\Port": port,
+    r"Downloads\SavePath": download_folder,
+}
+
+section_start = None
+section_end = len(lines)
+for i, line in enumerate(lines):
+    if line.strip() == "[Preferences]":
+        section_start = i
+        for j in range(i + 1, len(lines)):
+            if re.match(r"^\[[^]]+\]$", lines[j].strip()):
+                section_end = j
+                break
+        break
+
+if section_start is None:
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.append("[Preferences]")
+    section_start = len(lines) - 1
+    section_end = len(lines)
+
+for key, value in updates.items():
+    replaced = False
+    pattern = re.compile(r"^" + re.escape(key) + r"=")
+    for i in range(section_start + 1, section_end):
+        if pattern.match(lines[i]):
+            lines[i] = key + "=" + value
+            replaced = True
+            break
+    if not replaced:
+        lines.insert(section_end, key + "=" + value)
+        section_end += 1
+
+tmp = path + ".synoplex.tmp"
+with open(tmp, "w", encoding="utf-8") as f:
+    f.write("\n".join(lines) + "\n")
+os.replace(tmp, path)
+PY_QBIT_CONFIG
+        chmod 600 "$QBIT_CONFIG" 2>/dev/null || true
+        synopkg start qbittorrent >"$TMPBASE/start-qbittorrent-configured.log" 2>&1 || true
+
+        i=0
+        while [ "$i" -lt 30 ]; do
+            login="$(
+                curl -sS --max-time 5 \
+                  -c "$TMPBASE/qbit.cookies" \
+                  --data-urlencode "username=$QBIT_USERNAME" \
+                  --data-urlencode "password=$QBIT_PASSWORD" \
+                  "http://127.0.0.1:$QBIT_PORT/api/v2/auth/login" 2>/dev/null || true
+            )"
+            [ "$login" = "Ok." ] && break
+            sleep 1
+            i=$((i + 1))
+        done
+
+        if [ "$login" = "Ok." ]; then
+            log "qBittorrent WebUI credentials configured and API login verified"
+        else
+            warn "qBittorrent credentials were written but API login could not be verified."
+        fi
+    fi
+fi
 
 if is_installed radarr && [ -z "$RADARR_KEY" ]; then
     err "Unable to retrieve the Radarr API key."
