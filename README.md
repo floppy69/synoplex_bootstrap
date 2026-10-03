@@ -185,6 +185,8 @@ When an existing `stack.json` is detected in the SynoPlex configuration root, th
 
 Installed Plex/Radarr/Sonarr/Prowlarr/qBittorrent/Bazarr/Decypharr packages are always reused. Installation questions are only shown for missing packages.
 
+DSM ACL handling is strictly additive. The bootstrap never deletes, replaces, reorders or normalizes existing ACL entries on shared folders or files. It only adds the required ACE when that exact ACE is missing, so reruns preserve DSM-, Plex- and administrator-managed permissions.
+
 New-install defaults on the reference volume are:
 
 ```text
