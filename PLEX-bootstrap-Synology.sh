@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.6.4
+# Version 8.7.0
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -40,7 +40,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.6.4"
+SCRIPT_VERSION="8.7.0"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -49,7 +49,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6.4$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.0$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -240,6 +240,71 @@ DEFAULT_STACK_DIR="$DEFAULT_PLEX_SHARED_ROOT"
 DEFAULT_PLEX_DATA_ROOT="$DEFAULT_VOLUME/Media/Plex"
 DEFAULT_DECYPHARR_ROOT="$DEFAULT_PLEX_SHARED_ROOT/decypharr"
 
+# Fast local package detection is needed before interactive install choices.
+is_installed() {
+    [ -d "/var/packages/$1" ]
+}
+
+# Existing stack.json turns the bootstrap into reconcile mode: reuse its
+# deployment values instead of asking the operator for the same paths again.
+STACK_REUSE=0
+EARLY_PYTHON=""
+if command -v python3 >/dev/null 2>&1; then
+    EARLY_PYTHON="$(command -v python3)"
+else
+    for p in /bin/python3 /var/packages/python*/target/bin/python3 /volume*/@appstore/python*/bin/python3; do
+        [ -x "$p" ] || continue
+        EARLY_PYTHON="$p"
+        break
+    done
+fi
+
+stack_value() {
+    key="$1"
+    [ -n "$EARLY_PYTHON" ] || return 0
+    [ -f "$STACK_JSON" ] || return 0
+    "$EARLY_PYTHON" - "$STACK_JSON" "$key" <<'PY_STACK_VALUE'
+import json, sys
+path, key = sys.argv[1], sys.argv[2]
+try:
+    with open(path, encoding="utf-8") as f:
+        value = json.load(f)
+    for part in key.split("."):
+        if isinstance(value, dict):
+            value = value.get(part)
+        elif isinstance(value, list) and part.isdigit():
+            i = int(part)
+            value = value[i] if 0 <= i < len(value) else None
+        else:
+            value = None
+            break
+    if value is None:
+        pass
+    elif isinstance(value, bool):
+        print("1" if value else "0")
+    elif isinstance(value, (str, int, float)):
+        print(value)
+except Exception:
+    pass
+PY_STACK_VALUE
+}
+
+url_port() {
+    url="$1"
+    fallback="$2"
+    [ -n "$url" ] || { printf '%s' "$fallback"; return 0; }
+    if [ -n "$EARLY_PYTHON" ]; then
+        "$EARLY_PYTHON" - "$url" "$fallback" <<'PY_URL_PORT'
+import sys
+from urllib.parse import urlparse
+u=urlparse(sys.argv[1])
+print(u.port or (443 if u.scheme=="https" else 80 if u.scheme=="http" else int(sys.argv[2])))
+PY_URL_PORT
+        return 0
+    fi
+    printf '%s' "$fallback"
+}
+
 # Detect the actual ports used by existing *Arr packages.
 # SynoCommunity normally stores config.xml under /var/packages/<pkg>/var,
 # but keep an @appdata fallback for DSM variations.
@@ -322,7 +387,35 @@ printf 'Plex config root    : %s\n' "$DEFAULT_PLEX_SHARED_ROOT"
 printf '\nValues in brackets are defaults.\n'
 printf 'Press Enter to keep them. Human progress occasionally survives defaults.\n\n'
 
-NAS_IP="${NAS_IP:-$(ask "NAS IP/DNS used by Radarr/Sonarr" "$DETECTED_IP")}" 
+# Auto-detect the canonical stack.json before asking anything.
+if [ -n "${STACK_JSON:-}" ]; then
+    STACK_JSON="$(trim_trailing_slash "$STACK_JSON")"
+    STACK_DIR="$(dirname "$STACK_JSON")"
+elif [ -f "$DEFAULT_STACK_DIR/stack.json" ]; then
+    STACK_DIR="$DEFAULT_STACK_DIR"
+    STACK_JSON="$STACK_DIR/stack.json"
+    STACK_REUSE=1
+    log "Existing stack.json detected: $STACK_JSON"
+elif [ -f "$DEFAULT_PLEX_SHARED_ROOT/stack.json" ]; then
+    STACK_DIR="$DEFAULT_PLEX_SHARED_ROOT"
+    STACK_JSON="$STACK_DIR/stack.json"
+    STACK_REUSE=1
+    log "Existing stack.json detected: $STACK_JSON"
+else
+    STACK_DIR="${STACK_DIR:-$(ask "SynoPlex configuration directory (/volumeX/PlexMediaServer)" "$DEFAULT_STACK_DIR")}"
+    STACK_DIR="$(trim_trailing_slash "$STACK_DIR")"
+    STACK_JSON="$STACK_DIR/stack.json"
+fi
+
+[ -f "$STACK_JSON" ] && STACK_REUSE=1
+
+if [ "$STACK_REUSE" = "1" ]; then
+    STACK_NAS="$(stack_value nas.host)"
+    NAS_IP="${NAS_IP:-${STACK_NAS:-$DETECTED_IP}}"
+    log "Reconcile mode: deployment paths will be reused from stack.json"
+else
+    NAS_IP="${NAS_IP:-$(ask "NAS IP/DNS used by Radarr/Sonarr" "$DETECTED_IP")}"
+fi
 
 if [ -z "${ARCH:-}" ]; then
     ARCH="$(ask "Synology architecture for SynoCommunity packages (e.g. avoton, apollolake, v1000)" "")"
@@ -333,42 +426,23 @@ if [ -z "${ARCH:-}" ]; then
     warn "It will only be required if a SynoCommunity package actually needs to be installed."
 fi
 
-if [ -n "${STACK_JSON:-}" ]; then
-    STACK_JSON="$(trim_trailing_slash "$STACK_JSON")"
-    STACK_DIR="$(dirname "$STACK_JSON")"
-else
-    STACK_DIR="${STACK_DIR:-$(ask "SynoPlex configuration directory (/volumeX/PlexMediaServer)" "$DEFAULT_STACK_DIR")}" 
-    STACK_DIR="$(trim_trailing_slash "$STACK_DIR")"
-    STACK_JSON="$STACK_DIR/stack.json"
-fi
-
-WATCHLIST_STATE="${WATCHLIST_STATE:-$STACK_DIR/watchlist-state.json}"
-WATCHLIST_STATE="$(trim_trailing_slash "$WATCHLIST_STATE")"
-
-# Owner of stack.json.
-# Prefer the current owner when it is not root, then SUDO_USER,
-# otherwise root. The operator can always override this value.
+# Owner of stack.json. Existing stacks keep their current owner automatically.
 DEFAULT_STACK_OWNER=""
 if [ -f "$STACK_JSON" ]; then
     DEFAULT_STACK_OWNER="$(stat -c '%U' "$STACK_JSON" 2>/dev/null || true)"
     [ "$DEFAULT_STACK_OWNER" = "UNKNOWN" ] && DEFAULT_STACK_OWNER=""
-    [ "$DEFAULT_STACK_OWNER" = "root" ] && DEFAULT_STACK_OWNER=""
 fi
-
 if [ -z "$DEFAULT_STACK_OWNER" ] && [ -n "${SUDO_USER:-}" ] && [ "${SUDO_USER:-}" != "root" ]; then
     DEFAULT_STACK_OWNER="$SUDO_USER"
 fi
-
 [ -n "$DEFAULT_STACK_OWNER" ] || DEFAULT_STACK_OWNER="root"
 
 resolve_dsm_user() {
     requested="$1"
-
     if id "$requested" >/dev/null 2>&1; then
         printf '%s\n' "$requested"
         return 0
     fi
-
     if [ -x /usr/syno/sbin/synouser ]; then
         canonical="$(
             /usr/syno/sbin/synouser --get "$requested" 2>/dev/null |
@@ -380,65 +454,88 @@ resolve_dsm_user() {
             return 0
         fi
     fi
-
     return 1
 }
 
-STACK_OWNER="${STACK_OWNER:-$(ask "DSM account owning stack.json (root = root-only access)" "$DEFAULT_STACK_OWNER")}"
+if [ "$STACK_REUSE" = "1" ]; then
+    STACK_OWNER="${STACK_OWNER:-$(stack_value access.stack_owner)}"
+    [ -n "$STACK_OWNER" ] || STACK_OWNER="$DEFAULT_STACK_OWNER"
+else
+    STACK_OWNER="${STACK_OWNER:-$(ask "DSM account owning stack.json (root = root-only access)" "$DEFAULT_STACK_OWNER")}"
+fi
 STACK_OWNER_RESOLVED="$(resolve_dsm_user "$STACK_OWNER" || true)"
 if [ -z "$STACK_OWNER_RESOLVED" ]; then
     err "DSM account not found for stack.json: $STACK_OWNER"
     exit 1
 fi
-if [ "$STACK_OWNER_RESOLVED" != "$STACK_OWNER" ]; then
-    log "Resolved DSM account '$STACK_OWNER' as '$STACK_OWNER_RESOLVED'"
-fi
 STACK_OWNER="$STACK_OWNER_RESOLVED"
-
 STACK_GROUP="$(id -gn "$STACK_OWNER" 2>/dev/null || true)"
 [ -n "$STACK_GROUP" ] || STACK_GROUP="users"
 
-DEFAULT_N8N_STACK_READER=""
-
-N8N_STACK_READER="${N8N_STACK_READER:-$(ask "DSM account used by n8n to read stack.json (empty = none)" "$DEFAULT_N8N_STACK_READER")}"
-if [ -n "$N8N_STACK_READER" ]; then
-    N8N_STACK_READER_RESOLVED="$(resolve_dsm_user "$N8N_STACK_READER" || true)"
-    if [ -z "$N8N_STACK_READER_RESOLVED" ]; then
-        err "n8n DSM account not found: $N8N_STACK_READER"
-        exit 1
+if [ "$STACK_REUSE" = "1" ]; then
+    N8N_STACK_READER="${N8N_STACK_READER:-$(stack_value access.n8n_stack_reader)}"
+    if [ -n "$N8N_STACK_READER" ]; then
+        N8N_STACK_READER_RESOLVED="$(resolve_dsm_user "$N8N_STACK_READER" || true)"
+        [ -n "$N8N_STACK_READER_RESOLVED" ] && N8N_STACK_READER="$N8N_STACK_READER_RESOLVED"
     fi
-    if [ "$N8N_STACK_READER_RESOLVED" != "$N8N_STACK_READER" ]; then
-        log "Resolved DSM account '$N8N_STACK_READER' as '$N8N_STACK_READER_RESOLVED'"
+else
+    N8N_STACK_READER="${N8N_STACK_READER:-$(ask "DSM account used by n8n to read stack.json (empty = none)" "")}"
+    if [ -n "$N8N_STACK_READER" ]; then
+        N8N_STACK_READER_RESOLVED="$(resolve_dsm_user "$N8N_STACK_READER" || true)"
+        if [ -z "$N8N_STACK_READER_RESOLVED" ]; then
+            err "n8n DSM account not found: $N8N_STACK_READER"
+            exit 1
+        fi
+        if [ "$N8N_STACK_READER_RESOLVED" != "$N8N_STACK_READER" ]; then
+            log "Resolved DSM account '$N8N_STACK_READER' as '$N8N_STACK_READER_RESOLVED'"
+        fi
+        N8N_STACK_READER="$N8N_STACK_READER_RESOLVED"
     fi
-    N8N_STACK_READER="$N8N_STACK_READER_RESOLVED"
 fi
 
-N8N_CONFIG_ROOT="${N8N_CONFIG_ROOT:-$(ask "n8n mount path for the PlexMediaServer share" "/data/PlexMediaServer")}"
+WATCHLIST_STATE="${WATCHLIST_STATE:-$(stack_value paths.watchlist_state)}"
+[ -n "$WATCHLIST_STATE" ] || WATCHLIST_STATE="$STACK_DIR/watchlist-state.json"
+WATCHLIST_STATE="$(trim_trailing_slash "$WATCHLIST_STATE")"
+
+if [ "$STACK_REUSE" = "1" ]; then
+    N8N_CONFIG_ROOT="${N8N_CONFIG_ROOT:-$(stack_value paths.n8n_config_root)}"
+    N8N_MEDIA_ROOT="${N8N_MEDIA_ROOT:-$(stack_value paths.n8n_media_root)}"
+    PLEX_DATA_ROOT="${PLEX_DATA_ROOT:-$(stack_value paths.media_root)}"
+    [ -n "$N8N_CONFIG_ROOT" ] || N8N_CONFIG_ROOT="/data/PlexMediaServer"
+    [ -n "$N8N_MEDIA_ROOT" ] || N8N_MEDIA_ROOT="/data/media"
+    [ -n "$PLEX_DATA_ROOT" ] || PLEX_DATA_ROOT="$DEFAULT_PLEX_DATA_ROOT"
+else
+    N8N_CONFIG_ROOT="${N8N_CONFIG_ROOT:-$(ask "n8n mount path for the PlexMediaServer share" "/data/PlexMediaServer")}"
+    N8N_MEDIA_ROOT="${N8N_MEDIA_ROOT:-$(ask "n8n mount path for the media share/root" "/data/media")}"
+    PLEX_DATA_ROOT="${PLEX_DATA_ROOT:-$(ask "Plex data root (must be outside the PlexMediaServer configuration root)" "$DEFAULT_PLEX_DATA_ROOT")}"
+fi
 N8N_CONFIG_ROOT="$(trim_trailing_slash "$N8N_CONFIG_ROOT")"
-N8N_MEDIA_ROOT="${N8N_MEDIA_ROOT:-$(ask "n8n mount path for the media share/root" "/data/media")}"
 N8N_MEDIA_ROOT="$(trim_trailing_slash "$N8N_MEDIA_ROOT")"
-
-PLEX_DATA_ROOT="${PLEX_DATA_ROOT:-$(ask "Plex data root (must be outside the PlexMediaServer configuration root)" "$DEFAULT_PLEX_DATA_ROOT")}" 
 PLEX_DATA_ROOT="$(trim_trailing_slash "$PLEX_DATA_ROOT")"
-# The n8n media mount maps exactly to the Plex data root.
-MEDIA_ROOT="$PLEX_DATA_ROOT"
 
-# Keep media layout deterministic: Plex data root directly contains Movies and Series.
-# PLEX_LIBRARY_ROOT is retained internally as an alias for compatibility with the
-# ACL code and older stack.json readers, but it is no longer user-configurable.
+MEDIA_ROOT="$PLEX_DATA_ROOT"
 PLEX_LIBRARY_ROOT="$PLEX_DATA_ROOT"
 MOVIES_ROOT="$PLEX_DATA_ROOT/Movies"
 SERIES_ROOT="$PLEX_DATA_ROOT/Series"
 
-DEFAULT_DECYPHARR_FROM_PLEX="$DEFAULT_DECYPHARR_ROOT"
-DECYPHARR_ROOT="${DECYPHARR_ROOT:-$(ask "Decypharr data root" "$DEFAULT_DECYPHARR_FROM_PLEX")}" 
+if [ "$STACK_REUSE" = "1" ]; then
+    DECYPHARR_MOUNT="${DECYPHARR_MOUNT:-$(stack_value paths.decypharr_mount)}"
+    DECYPHARR_DOWNLOADS="${DECYPHARR_DOWNLOADS:-$(stack_value paths.decypharr_downloads)}"
+    QBIT_DOWNLOADS="${QBIT_DOWNLOADS:-$(stack_value paths.qbittorrent_downloads)}"
+    [ -n "$QBIT_DOWNLOADS" ] || QBIT_DOWNLOADS="$(stack_value qbittorrent.download_folder)"
+    [ -n "$DECYPHARR_MOUNT" ] || DECYPHARR_MOUNT="$DEFAULT_DECYPHARR_ROOT/mount"
+    [ -n "$DECYPHARR_DOWNLOADS" ] || DECYPHARR_DOWNLOADS="$DEFAULT_DECYPHARR_ROOT/downloads"
+    DECYPHARR_ROOT="${DECYPHARR_ROOT:-$(dirname "$DECYPHARR_MOUNT")}"
+    [ -n "$QBIT_DOWNLOADS" ] || QBIT_DOWNLOADS="$PLEX_DATA_ROOT/downloads/qbittorrent"
+else
+    DECYPHARR_ROOT="${DECYPHARR_ROOT:-$(ask "Decypharr data root" "$DEFAULT_DECYPHARR_ROOT")}"
+    DECYPHARR_MOUNT="${DECYPHARR_MOUNT:-$(ask "Decypharr virtual library mount point" "$DECYPHARR_ROOT/mount")}"
+    DECYPHARR_DOWNLOADS="${DECYPHARR_DOWNLOADS:-$(ask "Decypharr working/download directory" "$DECYPHARR_ROOT/downloads")}"
+    QBIT_DOWNLOADS="${QBIT_DOWNLOADS:-$(ask "qBittorrent download directory (fallback/manual)" "$PLEX_DATA_ROOT/downloads/qbittorrent")}"
+fi
 DECYPHARR_ROOT="$(trim_trailing_slash "$DECYPHARR_ROOT")"
-DECYPHARR_MOUNT="${DECYPHARR_MOUNT:-$(ask "Decypharr virtual library mount point" "$DECYPHARR_ROOT/mount")}" 
 DECYPHARR_MOUNT="$(trim_trailing_slash "$DECYPHARR_MOUNT")"
-DECYPHARR_DOWNLOADS="${DECYPHARR_DOWNLOADS:-$(ask "Decypharr working/download directory" "$DECYPHARR_ROOT/downloads")}" 
 DECYPHARR_DOWNLOADS="$(trim_trailing_slash "$DECYPHARR_DOWNLOADS")"
-
-QBIT_DOWNLOADS="${QBIT_DOWNLOADS:-$(ask "qBittorrent download directory (fallback/manual)" "$PLEX_DATA_ROOT/downloads/qbittorrent")}" 
 QBIT_DOWNLOADS="$(trim_trailing_slash "$QBIT_DOWNLOADS")"
 
 DECYPHARR_APPDATA="${DECYPHARR_APPDATA:-$(ask "Decypharr package internal data" "/var/packages/decypharr/var")}" 
@@ -449,27 +546,53 @@ DECYPHARR_CACHE_DIR="$DECYPHARR_APPDATA/cache/dfs"
 DECYPHARR_SYNC="$DECYPHARR_APPDATA/sync_from_stack.py"
 DECYPHARR_BOOT_SYNC="/usr/local/etc/rc.d/S99decypharr-stack-sync.sh"
 
-PLEX_PORT="${PLEX_PORT:-$(ask "Plex port" "32400")}" 
-RADARR_PORT="${RADARR_PORT:-$(ask "Radarr port" "$DETECTED_RADARR_PORT")}" 
-SONARR_PORT="${SONARR_PORT:-$(ask "Sonarr port" "$DETECTED_SONARR_PORT")}" 
-PROWLARR_PORT="${PROWLARR_PORT:-$(ask "Prowlarr port" "$DETECTED_PROWLARR_PORT")}" 
-QBIT_PORT="${QBIT_PORT:-$(ask "qBittorrent port" "$DETECTED_QBIT_PORT")}" 
-BAZARR_PORT="${BAZARR_PORT:-$(ask "Bazarr port" "6767")}" 
-DECYPHARR_PORT="${DECYPHARR_PORT:-$(ask "Decypharr port" "8282")}" 
-RADARR_CATEGORY="${RADARR_CATEGORY:-$(ask "Download category used by Radarr" "radarr")}" 
-SONARR_CATEGORY="${SONARR_CATEGORY:-$(ask "Download category used by Sonarr" "sonarr")}" 
-QBIT_USERNAME="${QBIT_USERNAME:-synoplex}"
-QBIT_PASSWORD="${QBIT_PASSWORD:-}"
+if [ "$STACK_REUSE" = "1" ]; then
+    PLEX_PORT="${PLEX_PORT:-$(url_port "$(stack_value plex.url)" 32400)}"
+    RADARR_PORT="${RADARR_PORT:-$DETECTED_RADARR_PORT}"
+    SONARR_PORT="${SONARR_PORT:-$DETECTED_SONARR_PORT}"
+    PROWLARR_PORT="${PROWLARR_PORT:-$DETECTED_PROWLARR_PORT}"
+    QBIT_PORT="${QBIT_PORT:-$DETECTED_QBIT_PORT}"
+    BAZARR_PORT="${BAZARR_PORT:-$(url_port "$(stack_value bazarr.url)" 6767)}"
+    DECYPHARR_PORT="${DECYPHARR_PORT:-$(url_port "$(stack_value decypharr.url)" 8282)}"
+    RADARR_CATEGORY="${RADARR_CATEGORY:-$(stack_value decypharr.categories.0)}"
+    SONARR_CATEGORY="${SONARR_CATEGORY:-$(stack_value decypharr.categories.1)}"
+    [ -n "$RADARR_CATEGORY" ] || RADARR_CATEGORY="radarr"
+    [ -n "$SONARR_CATEGORY" ] || SONARR_CATEGORY="sonarr"
+    QBIT_USERNAME="${QBIT_USERNAME:-$(stack_value qbittorrent.username)}"
+    QBIT_PASSWORD="${QBIT_PASSWORD:-$(stack_value qbittorrent.password)}"
+    [ -n "$QBIT_USERNAME" ] || QBIT_USERNAME="synoplex"
+else
+    PLEX_PORT="${PLEX_PORT:-$(ask "Plex port" "32400")}"
+    RADARR_PORT="${RADARR_PORT:-$(ask "Radarr port" "$DETECTED_RADARR_PORT")}"
+    SONARR_PORT="${SONARR_PORT:-$(ask "Sonarr port" "$DETECTED_SONARR_PORT")}"
+    PROWLARR_PORT="${PROWLARR_PORT:-$(ask "Prowlarr port" "$DETECTED_PROWLARR_PORT")}"
+    QBIT_PORT="${QBIT_PORT:-$(ask "qBittorrent port" "$DETECTED_QBIT_PORT")}"
+    BAZARR_PORT="${BAZARR_PORT:-$(ask "Bazarr port" "6767")}"
+    DECYPHARR_PORT="${DECYPHARR_PORT:-$(ask "Decypharr port" "8282")}"
+    RADARR_CATEGORY="${RADARR_CATEGORY:-$(ask "Download category used by Radarr" "radarr")}"
+    SONARR_CATEGORY="${SONARR_CATEGORY:-$(ask "Download category used by Sonarr" "sonarr")}"
+    QBIT_USERNAME="${QBIT_USERNAME:-synoplex}"
+    QBIT_PASSWORD="${QBIT_PASSWORD:-}"
+fi
 
-INSTALL_PLEX="${INSTALL_PLEX:-$(ask_yes_no "Install Plex if missing" "1")}" 
-INSTALL_RADARR="${INSTALL_RADARR:-$(ask_yes_no "Install Radarr if missing" "1")}" 
-INSTALL_SONARR="${INSTALL_SONARR:-$(ask_yes_no "Install Sonarr if missing" "1")}" 
-INSTALL_PROWLARR="${INSTALL_PROWLARR:-$(ask_yes_no "Install Prowlarr if missing" "1")}" 
-INSTALL_QBIT="${INSTALL_QBIT:-$(ask_yes_no "Install qBittorrent if missing" "1")}" 
-INSTALL_BAZARR="${INSTALL_BAZARR:-$(ask_yes_no "Install Bazarr if missing" "1")}" 
-INSTALL_DECYPHARR="${INSTALL_DECYPHARR:-$(ask_yes_no "Install Decypharr if missing" "1")}" 
-CONFIGURE_SERVICES="${CONFIGURE_SERVICES:-${CONFIGURE_ARRS:-$(ask_yes_no "Automatically interconnect Prowlarr, Radarr, Sonarr, Bazarr, Decypharr and qBittorrent" "1")}}" 
-INSTALL_BOOT_SYNC="${INSTALL_BOOT_SYNC:-$(ask_yes_no "Resynchronize Decypharr from stack.json at every DSM boot" "1")}" 
+# Existing packages are automatically reused. Only missing packages produce an
+# installation choice on a first install; reconcile mode installs missing
+# required components automatically unless explicitly disabled by environment.
+if is_installed PlexMediaServer; then INSTALL_PLEX=0; else INSTALL_PLEX="${INSTALL_PLEX:-$(ask_yes_no "Install Plex (missing)" "1")}"; fi
+if is_installed radarr; then INSTALL_RADARR=0; else INSTALL_RADARR="${INSTALL_RADARR:-$(ask_yes_no "Install Radarr (missing)" "1")}"; fi
+if is_installed sonarr; then INSTALL_SONARR=0; else INSTALL_SONARR="${INSTALL_SONARR:-$(ask_yes_no "Install Sonarr (missing)" "1")}"; fi
+if is_installed prowlarr; then INSTALL_PROWLARR=0; else INSTALL_PROWLARR="${INSTALL_PROWLARR:-$(ask_yes_no "Install Prowlarr (missing)" "1")}"; fi
+if is_installed qbittorrent; then INSTALL_QBIT=0; else INSTALL_QBIT="${INSTALL_QBIT:-$(ask_yes_no "Install qBittorrent (missing)" "1")}"; fi
+if is_installed bazarr; then INSTALL_BAZARR=0; else INSTALL_BAZARR="${INSTALL_BAZARR:-$(ask_yes_no "Install Bazarr (missing)" "1")}"; fi
+if is_installed decypharr; then INSTALL_DECYPHARR=0; else INSTALL_DECYPHARR="${INSTALL_DECYPHARR:-$(ask_yes_no "Install Decypharr (missing)" "1")}"; fi
+
+if [ "$STACK_REUSE" = "1" ]; then
+    CONFIGURE_SERVICES="${CONFIGURE_SERVICES:-${CONFIGURE_ARRS:-1}}"
+    INSTALL_BOOT_SYNC="${INSTALL_BOOT_SYNC:-1}"
+else
+    CONFIGURE_SERVICES="${CONFIGURE_SERVICES:-${CONFIGURE_ARRS:-$(ask_yes_no "Automatically interconnect Prowlarr, Radarr, Sonarr, Bazarr, Decypharr and qBittorrent" "1")}}"
+    INSTALL_BOOT_SYNC="${INSTALL_BOOT_SYNC:-$(ask_yes_no "Resynchronize Decypharr from stack.json at every DSM boot" "1")}"
+fi
 
 validate_abs_path() {
     value="$1"
@@ -586,6 +709,7 @@ if [ ! -f "$STACK_JSON" ]; then
 fi
 
 printf '\n------------------ SELECTED CONFIGURATION -------------------\n'
+printf 'Mode                 : %s\n' "$([ "$STACK_REUSE" = "1" ] && printf reconcile || printf install)"
 printf 'NAS / access         : %s\n' "$NAS_IP"
 printf 'stack.json           : %s\n' "$STACK_JSON"
 printf 'watchlist-state.json : %s\n' "$WATCHLIST_STATE"
@@ -1395,7 +1519,7 @@ export STACK_JSON NAS_IP RADARR_PORT SONARR_PORT PROWLARR_PORT QBIT_PORT BAZARR_
 export RADARR_KEY SONARR_KEY PROWLARR_KEY BAZARR_KEY DECYPHARR_MOUNT DECYPHARR_DOWNLOADS QBIT_DOWNLOADS
 export QBIT_USERNAME QBIT_PASSWORD
 export MOVIES_ROOT SERIES_ROOT MEDIA_ROOT ALLDEBRID_API_KEY RADARR_CATEGORY SONARR_CATEGORY WATCHLIST_STATE
-export STACK_DIR N8N_CONFIG_ROOT N8N_MEDIA_ROOT
+export STACK_DIR N8N_CONFIG_ROOT N8N_MEDIA_ROOT STACK_OWNER N8N_STACK_READER
 
 "$PYTHON" <<'PY'
 import json, os, stat, tempfile
@@ -1416,6 +1540,10 @@ def obj(name):
     return current
 
 obj("nas")["host"] = nas
+
+access = obj("access")
+access["stack_owner"] = os.environ.get("STACK_OWNER", "")
+access["n8n_stack_reader"] = os.environ.get("N8N_STACK_READER", "")
 
 if os.environ.get("ALLDEBRID_API_KEY"):
     obj("decypharr")["alldebrid_api_key"] = os.environ["ALLDEBRID_API_KEY"]
@@ -2450,4 +2578,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6.4
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.0
