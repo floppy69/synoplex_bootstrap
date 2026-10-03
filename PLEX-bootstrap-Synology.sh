@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.4
+# Version 8.5
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -19,13 +19,15 @@
 #   STACK_DIR=/volumeX/PlexMediaServer
 #   STACK_JSON=/volumeX/PlexMediaServer/stack.json
 #   WATCHLIST_STATE=/volumeX/PlexMediaServer/watchlist-state.json
-#   PLEX_DATA_ROOT=/volume1/MediaStack/Plex
-#   PLEX_LIBRARY_ROOT=/volume1/MediaStack/Plex/media
-#   MOVIES_ROOT=/volume1/MediaStack/Plex/media/Movies
-#   SERIES_ROOT=/volume1/MediaStack/Plex/media/Series
-#   DECYPHARR_ROOT=/volume1/PlexMediaServer/decypharr
-#   DECYPHARR_MOUNT=/volume1/PlexMediaServer/decypharr/mount
-#   DECYPHARR_DOWNLOADS=/volume1/PlexMediaServer/decypharr/downloads
+#   PLEX_DATA_ROOT=/volumeX/Media/Plex
+#   PLEX_LIBRARY_ROOT=/volumeX/Media/Plex/media
+#   MOVIES_ROOT=/volumeX/Media/Plex/media/Movies
+#   SERIES_ROOT=/volumeX/Media/Plex/media/Series
+#   DECYPHARR_ROOT=/volumeX/PlexMediaServer/decypharr
+#   DECYPHARR_MOUNT=/volumeX/PlexMediaServer/decypharr/mount
+#   DECYPHARR_DOWNLOADS=/volumeX/PlexMediaServer/decypharr/downloads
+#   N8N_CONFIG_ROOT=/data/PlexMediaServer
+#   N8N_MEDIA_ROOT=/data/media
 #   DECYPHARR_APPDATA=/var/packages/decypharr/var
 #   RADARR_PORT=7878 SONARR_PORT=8989 PLEX_PORT=32400 DECYPHARR_PORT=8282
 #   RADARR_CATEGORY=radarr SONARR_CATEGORY=sonarr
@@ -37,7 +39,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.4"
+SCRIPT_VERSION="8.5"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -46,7 +48,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.4$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.5$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -234,7 +236,7 @@ done
 [ -n "$DEFAULT_PLEX_SHARED_ROOT" ] || DEFAULT_PLEX_SHARED_ROOT="$DEFAULT_VOLUME/PlexMediaServer"
 
 DEFAULT_STACK_DIR="$DEFAULT_PLEX_SHARED_ROOT"
-DEFAULT_PLEX_DATA_ROOT="$DEFAULT_VOLUME/VideoFactory/_Plex"
+DEFAULT_PLEX_DATA_ROOT="$DEFAULT_VOLUME/Media/Plex"
 DEFAULT_DECYPHARR_ROOT="$DEFAULT_PLEX_SHARED_ROOT/decypharr"
 
 # Detect the actual ports used by existing *Arr packages.
@@ -369,17 +371,17 @@ STACK_GROUP="$(id -gn "$STACK_OWNER" 2>/dev/null || true)"
 [ -n "$STACK_GROUP" ] || STACK_GROUP="users"
 
 DEFAULT_N8N_STACK_READER=""
-if id VideoFactory >/dev/null 2>&1; then
-    DEFAULT_N8N_STACK_READER="VideoFactory"
-elif id videofactory >/dev/null 2>&1; then
-    DEFAULT_N8N_STACK_READER="videofactory"
-fi
 
 N8N_STACK_READER="${N8N_STACK_READER:-$(ask "DSM account used by n8n to read stack.json (empty = none)" "$DEFAULT_N8N_STACK_READER")}"
 if [ -n "$N8N_STACK_READER" ] && ! id "$N8N_STACK_READER" >/dev/null 2>&1; then
     err "n8n DSM account not found: $N8N_STACK_READER"
     exit 1
 fi
+
+N8N_CONFIG_ROOT="${N8N_CONFIG_ROOT:-$(ask "n8n mount path for the PlexMediaServer share" "/data/PlexMediaServer")}"
+N8N_CONFIG_ROOT="$(trim_trailing_slash "$N8N_CONFIG_ROOT")"
+N8N_MEDIA_ROOT="${N8N_MEDIA_ROOT:-$(ask "n8n mount path for the media share/root" "/data/media")}"
+N8N_MEDIA_ROOT="$(trim_trailing_slash "$N8N_MEDIA_ROOT")"
 
 PLEX_DATA_ROOT="${PLEX_DATA_ROOT:-$(ask "Plex data root" "$DEFAULT_PLEX_DATA_ROOT")}" 
 PLEX_DATA_ROOT="$(trim_trailing_slash "$PLEX_DATA_ROOT")"
@@ -461,7 +463,9 @@ for path_item in \
     "$DECYPHARR_MOUNT|Montage Decypharr" \
     "$DECYPHARR_DOWNLOADS|Decypharr downloads" \
     "$QBIT_DOWNLOADS|qBittorrent downloads" \
-    "$DECYPHARR_APPDATA|Appdata Decypharr"
+    "$DECYPHARR_APPDATA|Appdata Decypharr" \
+    "$N8N_CONFIG_ROOT|n8n PlexMediaServer mount" \
+    "$N8N_MEDIA_ROOT|n8n media mount"
 do
     value="${path_item%%|*}"
     label="${path_item#*|}"
@@ -527,6 +531,8 @@ printf 'stack.json           : %s\n' "$STACK_JSON"
 printf 'watchlist-state.json : %s\n' "$WATCHLIST_STATE"
 printf 'stack.json owner     : %s:%s (0600 + ACL)\n' "$STACK_OWNER" "$STACK_GROUP"
 printf 'n8n stack reader     : %s\n' "${N8N_STACK_READER:-none}"
+printf 'n8n config root      : %s\n' "$N8N_CONFIG_ROOT"
+printf 'n8n media root       : %s\n' "$N8N_MEDIA_ROOT"
 printf 'Plex data            : %s\n' "$PLEX_DATA_ROOT"
 printf 'Plex library         : %s\n' "$PLEX_LIBRARY_ROOT"
 printf 'Movies               : %s\n' "$MOVIES_ROOT"
@@ -559,7 +565,7 @@ chmod 775 "$QBIT_DOWNLOADS" 2>/dev/null || true
 log "Media directory tree created/verified"
 
 PLEXROOT="$PLEX_DATA_ROOT"
-VF="$(dirname "$PLEX_DATA_ROOT")"
+MEDIA_ROOT="$PLEX_DATA_ROOT"
 LEGACY_DOWNLOADS="$PLEX_DATA_ROOT/downloads"
 mkdir -p "$LEGACY_DOWNLOADS/radarr" "$LEGACY_DOWNLOADS/sonarr"
 
@@ -1134,7 +1140,8 @@ fi
 
 export STACK_JSON NAS_IP RADARR_PORT SONARR_PORT PROWLARR_PORT QBIT_PORT BAZARR_PORT PLEX_PORT DECYPHARR_PORT
 export RADARR_KEY SONARR_KEY PROWLARR_KEY DECYPHARR_MOUNT DECYPHARR_DOWNLOADS QBIT_DOWNLOADS
-export MOVIES_ROOT SERIES_ROOT VF ALLDEBRID_API_KEY RADARR_CATEGORY SONARR_CATEGORY WATCHLIST_STATE
+export MOVIES_ROOT SERIES_ROOT MEDIA_ROOT ALLDEBRID_API_KEY RADARR_CATEGORY SONARR_CATEGORY WATCHLIST_STATE
+export STACK_DIR N8N_CONFIG_ROOT N8N_MEDIA_ROOT
 
 "$PYTHON" <<'PY'
 import json, os, stat, tempfile
@@ -1195,7 +1202,10 @@ decy.update({
 })
 
 paths = obj("paths")
-paths.setdefault("nas_root", os.environ["VF"])
+paths["config_root"] = os.environ["STACK_DIR"]
+paths["media_root"] = os.environ["MEDIA_ROOT"]
+paths["n8n_config_root"] = os.environ["N8N_CONFIG_ROOT"]
+paths["n8n_media_root"] = os.environ["N8N_MEDIA_ROOT"]
 paths["movies"] = os.environ["MOVIES_ROOT"]
 paths["series"] = os.environ["SERIES_ROOT"]
 paths["decypharr_mount"] = os.environ["DECYPHARR_MOUNT"]
@@ -1383,7 +1393,7 @@ api_key = find_alldebrid_key(stack)
 if not api_key:
     raise SystemExit("AllDebrid API key not found in stack.json")
 
-radarr_url, radarr_key = endpoint(stack, "radarr", "8310")
+radarr_url, radarr_key = endpoint(stack, "radarr", "7878")
 sonarr_url, sonarr_key = endpoint(stack, "sonarr", "8989")
 
 cfg = load_json(CONFIG_JSON, {})
@@ -1854,7 +1864,8 @@ printf 'qBittorrent downloads: %s\n' "$QBIT_DOWNLOADS"
 printf 'Decypharr config    : %s\n' "$DECYPHARR_CONFIG"
 printf 'Source of truth     : %s\n' "$STACK_JSON"
 printf 'Watchlist state     : %s\n' "$WATCHLIST_STATE"
-printf 'n8n config mount    : //%s/PlexMediaServer -> /data/plex-media-server\n' "$NAS_IP"
+printf 'n8n config mount    : PlexMediaServer -> %s\n' "$N8N_CONFIG_ROOT"
+printf 'n8n media mount     : media root -> %s\n' "$N8N_MEDIA_ROOT"
 printf 'stack.json owner    : %s:%s (0600 + ACL)\n' "$STACK_OWNER" "$STACK_GROUP"
 printf 'n8n stack reader    : %s\n' "${N8N_STACK_READER:-none}"
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'Boot sync           : %s\n' "$DECYPHARR_BOOT_SYNC"; else printf 'Boot sync           : disabled\n'; fi
@@ -1892,4 +1903,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.4
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.5
