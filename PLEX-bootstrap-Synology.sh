@@ -49,7 +49,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6.1$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -386,8 +386,8 @@ N8N_MEDIA_ROOT="$(trim_trailing_slash "$N8N_MEDIA_ROOT")"
 
 PLEX_DATA_ROOT="${PLEX_DATA_ROOT:-$(ask "Plex data root (must be outside the PlexMediaServer configuration root)" "$DEFAULT_PLEX_DATA_ROOT")}" 
 PLEX_DATA_ROOT="$(trim_trailing_slash "$PLEX_DATA_ROOT")"
-MEDIA_ROOT="${MEDIA_ROOT:-$(ask "NAS media share/root corresponding to the n8n media mount" "$(dirname "$PLEX_DATA_ROOT")")}"
-MEDIA_ROOT="$(trim_trailing_slash "$MEDIA_ROOT")"
+# The n8n media mount maps exactly to the Plex data root.
+MEDIA_ROOT="$PLEX_DATA_ROOT"
 
 # Keep media layout deterministic: Plex data root directly contains Movies and Series.
 # PLEX_LIBRARY_ROOT is retained internally as an alias for compatibility with the
@@ -462,7 +462,6 @@ for path_item in \
     "$STACK_DIR|stack.json directory" \
     "$WATCHLIST_STATE|watchlist-state.json" \
     "$PLEX_DATA_ROOT|Plex root" \
-    "$MEDIA_ROOT|NAS media share/root" \
     "$MOVIES_ROOT|Movies library" \
     "$SERIES_ROOT|Series library" \
     "$DECYPHARR_ROOT|Decypharr root" \
@@ -560,7 +559,6 @@ printf 'stack.json owner     : %s:%s (0600 + ACL)\n' "$STACK_OWNER" "$STACK_GROU
 printf 'n8n stack reader     : %s\n' "${N8N_STACK_READER:-none}"
 printf 'n8n config root      : %s\n' "$N8N_CONFIG_ROOT"
 printf 'n8n media root       : %s\n' "$N8N_MEDIA_ROOT"
-printf 'NAS media root       : %s\n' "$MEDIA_ROOT"
 printf 'Plex data            : %s\n' "$PLEX_DATA_ROOT"
 printf 'Movies               : %s\n' "$MOVIES_ROOT"
 printf 'Series               : %s\n' "$SERIES_ROOT"
@@ -2383,4 +2381,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6.1
