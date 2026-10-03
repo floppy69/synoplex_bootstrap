@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.5
+# Version 8.6.1
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -40,7 +40,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.5"
+SCRIPT_VERSION="8.6.1"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
