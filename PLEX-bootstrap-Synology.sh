@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.7.3
+# Version 8.7.4
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -39,7 +39,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.7.3"
+SCRIPT_VERSION="8.7.4"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -48,7 +48,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.3$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.4$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -2135,9 +2135,15 @@ if [ -x "$ACLTOOL" ]; then
     acl_set_rw "$MOVIES_ROOT" "$BAZARR_USER"
     acl_set_rw "$SERIES_ROOT" "$BAZARR_USER"
 
+    # Decypharr itself must be able to traverse the PlexMediaServer shared
+    # folder before it can reach its own data/mount directories. Without this
+    # DSM can return Permission denied even when sc-decypharr owns the child.
+    acl_set_ro "$STACK_DIR" "$DECYPHARR_USER"
     acl_set_rw "$DECYPHARR_ROOT" "$DECYPHARR_USER"
     acl_set_rw "$DECYPHARR_MOUNT" "$DECYPHARR_USER"
     acl_set_rw "$DECYPHARR_DOWNLOADS" "$DECYPHARR_USER"
+    acl_set_rw "$DECYPHARR_DOWNLOADS/$RADARR_CATEGORY" "$DECYPHARR_USER"
+    acl_set_rw "$DECYPHARR_DOWNLOADS/$SONARR_CATEGORY" "$DECYPHARR_USER"
 
     log "DSM ACLs applied (stack.json: admin=$STACK_OWNER, n8n=${N8N_STACK_READER:-none})"
 else
@@ -2640,4 +2646,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.3
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.4
