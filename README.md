@@ -185,10 +185,10 @@ The bootstrap asks for the NAS address, directories, ports, installation choices
 New-install defaults on the reference volume are:
 
 ```text
-NAS address          : 192.168.0.4
+NAS address          : auto-detected primary IPv4 address
 stack.json directory : /volumeX/PlexMediaServer
 watchlist-state.json : /volumeX/PlexMediaServer/watchlist-state.json
-Plex data root       : /volume1/VideoFactory/_Plex
+Plex data root       : /volumeX/Media/Plex
 Plex library root    : /volumeX/Media/Plex/media
 Movies               : /volumeX/Media/Plex/media/Movies
 Series               : /volumeX/Media/Plex/media/Series
@@ -196,7 +196,7 @@ Decypharr root       : /volumeX/PlexMediaServer/decypharr
 Decypharr mount      : /volumeX/PlexMediaServer/decypharr/mount
 Decypharr downloads  : /volumeX/PlexMediaServer/decypharr/downloads
 Decypharr appdata    : /var/packages/decypharr/var
-qBittorrent downloads: /volume1/VideoFactory/_Plex/downloads/qbittorrent
+qBittorrent downloads: /volumeX/Media/Plex/downloads/qbittorrent
 ```
 
 Reruns use the detected generic paths unless explicit environment-variable overrides are supplied. Existing service ports are detected from native package configuration where possible; otherwise standard defaults are used.
