@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.7.8
+# Version 8.7.9
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -39,7 +39,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.7.8"
+SCRIPT_VERSION="8.7.9"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -48,7 +48,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.8$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.9$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -1611,7 +1611,7 @@ decy.update({
     "mount_path": os.environ["DECYPHARR_MOUNT"],
     "download_folder": os.environ["DECYPHARR_DOWNLOADS"],
     "categories": [os.environ["RADARR_CATEGORY"], os.environ["SONARR_CATEGORY"]],
-    "default_download_action": "move",
+    "default_download_action": "symlink",
 })
 
 paths = obj("paths")
@@ -1819,7 +1819,16 @@ cfg["app_url"] = cfg.get("app_url") or f"http://{(stack.get('nas') or {}).get('h
 cfg["log_level"] = cfg.get("log_level") or "info"
 cfg["download_folder"] = DOWNLOAD_FOLDER
 cfg["categories"] = [RADARR_CATEGORY, SONARR_CATEGORY]
-cfg["default_download_action"] = "symlink"
+
+# Decypharr supports symlink/download/strm/none. SynoPlex uses symlink for
+# debrid imports: the Arr imports the exposed file into the final library and
+# the temporary link can then be cleaned without duplicating a local payload.
+stack_decy = stack.get("decypharr") if isinstance(stack.get("decypharr"), dict) else {}
+download_action = str(stack_decy.get("default_download_action") or "symlink").strip().lower()
+if download_action not in {"symlink", "download", "strm", "none"}:
+    download_action = "symlink"
+cfg["default_download_action"] = download_action
+
 cfg["folder_naming"] = cfg.get("folder_naming") or "original_no_ext"
 cfg["refresh_interval"] = cfg.get("refresh_interval") or "30s"
 cfg["max_active_downloads"] = int(cfg.get("max_active_downloads") or 5)
@@ -2735,4 +2744,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.8
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.9
