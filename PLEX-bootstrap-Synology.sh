@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.6.1
+# Version 8.6.2
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -40,7 +40,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.6.1"
+SCRIPT_VERSION="8.6.2"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -49,7 +49,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6.1$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6.2$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -361,12 +361,39 @@ fi
 
 [ -n "$DEFAULT_STACK_OWNER" ] || DEFAULT_STACK_OWNER="root"
 
-STACK_OWNER="${STACK_OWNER:-$(ask "DSM account owning stack.json (root = root-only access)" "$DEFAULT_STACK_OWNER")}"
+resolve_dsm_user() {
+    requested="$1"
 
-if ! id "$STACK_OWNER" >/dev/null 2>&1; then
+    if id "$requested" >/dev/null 2>&1; then
+        printf '%s\n' "$requested"
+        return 0
+    fi
+
+    if [ -x /usr/syno/sbin/synouser ]; then
+        canonical="$(
+            /usr/syno/sbin/synouser --get "$requested" 2>/dev/null |
+            sed -n 's/^User Name[[:space:]]*:[[:space:]]*\[\(.*\)\][[:space:]]*$/\1/p' |
+            head -n 1
+        )"
+        if [ -n "$canonical" ]; then
+            printf '%s\n' "$canonical"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+STACK_OWNER="${STACK_OWNER:-$(ask "DSM account owning stack.json (root = root-only access)" "$DEFAULT_STACK_OWNER")}"
+STACK_OWNER_RESOLVED="$(resolve_dsm_user "$STACK_OWNER" || true)"
+if [ -z "$STACK_OWNER_RESOLVED" ]; then
     err "DSM account not found for stack.json: $STACK_OWNER"
     exit 1
 fi
+if [ "$STACK_OWNER_RESOLVED" != "$STACK_OWNER" ]; then
+    log "Resolved DSM account '$STACK_OWNER' as '$STACK_OWNER_RESOLVED'"
+fi
+STACK_OWNER="$STACK_OWNER_RESOLVED"
 
 STACK_GROUP="$(id -gn "$STACK_OWNER" 2>/dev/null || true)"
 [ -n "$STACK_GROUP" ] || STACK_GROUP="users"
@@ -374,9 +401,16 @@ STACK_GROUP="$(id -gn "$STACK_OWNER" 2>/dev/null || true)"
 DEFAULT_N8N_STACK_READER=""
 
 N8N_STACK_READER="${N8N_STACK_READER:-$(ask "DSM account used by n8n to read stack.json (empty = none)" "$DEFAULT_N8N_STACK_READER")}"
-if [ -n "$N8N_STACK_READER" ] && ! id "$N8N_STACK_READER" >/dev/null 2>&1; then
-    err "n8n DSM account not found: $N8N_STACK_READER"
-    exit 1
+if [ -n "$N8N_STACK_READER" ]; then
+    N8N_STACK_READER_RESOLVED="$(resolve_dsm_user "$N8N_STACK_READER" || true)"
+    if [ -z "$N8N_STACK_READER_RESOLVED" ]; then
+        err "n8n DSM account not found: $N8N_STACK_READER"
+        exit 1
+    fi
+    if [ "$N8N_STACK_READER_RESOLVED" != "$N8N_STACK_READER" ]; then
+        log "Resolved DSM account '$N8N_STACK_READER' as '$N8N_STACK_READER_RESOLVED'"
+    fi
+    N8N_STACK_READER="$N8N_STACK_READER_RESOLVED"
 fi
 
 N8N_CONFIG_ROOT="${N8N_CONFIG_ROOT:-$(ask "n8n mount path for the PlexMediaServer share" "/data/PlexMediaServer")}"
@@ -2381,4 +2415,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6.1
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6.2
