@@ -486,6 +486,8 @@ validate_port "$DECYPHARR_PORT" "Decypharr port" || exit 1
 
 [ -n "$RADARR_CATEGORY" ] || { err "Radarr category cannot be empty."; exit 1; }
 [ -n "$SONARR_CATEGORY" ] || { err "Sonarr category cannot be empty."; exit 1; }
+case "$RADARR_CATEGORY" in *[!A-Za-z0-9._-]*) err "Radarr category contains unsafe characters: $RADARR_CATEGORY"; exit 1 ;; esac
+case "$SONARR_CATEGORY" in *[!A-Za-z0-9._-]*) err "Sonarr category contains unsafe characters: $SONARR_CATEGORY"; exit 1 ;; esac
 
 PORT_LIST="$PLEX_PORT $RADARR_PORT $SONARR_PORT $PROWLARR_PORT $QBIT_PORT $BAZARR_PORT $DECYPHARR_PORT"
 for p1 in $PORT_LIST; do
@@ -564,9 +566,10 @@ fi
 # Media paths can be prepared immediately. The PlexMediaServer shared folder
 # is deliberately not created here: on a fresh NAS, let the Plex package create
 # its DSM shared folder first.
-mkdir -p "$PLEX_DATA_ROOT" "$PLEX_LIBRARY_ROOT" "$MOVIES_ROOT" "$SERIES_ROOT" "$QBIT_DOWNLOADS"
+mkdir -p "$PLEX_DATA_ROOT" "$PLEX_LIBRARY_ROOT" "$MOVIES_ROOT" "$SERIES_ROOT" \
+    "$QBIT_DOWNLOADS" "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$QBIT_DOWNLOADS/$SONARR_CATEGORY"
 chmod 755 "$PLEX_DATA_ROOT" "$PLEX_LIBRARY_ROOT" "$MOVIES_ROOT" "$SERIES_ROOT" 2>/dev/null || true
-chmod 775 "$QBIT_DOWNLOADS" 2>/dev/null || true
+chmod 775 "$QBIT_DOWNLOADS" "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$QBIT_DOWNLOADS/$SONARR_CATEGORY" 2>/dev/null || true
 log "Media directory tree created/verified"
 
 PLEXROOT="$PLEX_DATA_ROOT"
