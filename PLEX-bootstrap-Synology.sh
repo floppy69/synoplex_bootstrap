@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.7.0
+# Version 8.7.1
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -39,7 +39,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.7.0"
+SCRIPT_VERSION="8.7.1"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -48,7 +48,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.0$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.1$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -967,9 +967,11 @@ if [ "$STACK_DIR" = "$DEFAULT_PLEX_SHARED_ROOT" ] && [ ! -d "$DEFAULT_PLEX_SHARE
     exit 1
 fi
 
-mkdir -p "$STACK_DIR" "$DECYPHARR_ROOT" "$DECYPHARR_MOUNT" "$DECYPHARR_DOWNLOADS"
+mkdir -p "$STACK_DIR" "$DECYPHARR_ROOT" "$DECYPHARR_MOUNT" "$DECYPHARR_DOWNLOADS" \
+    "$DECYPHARR_DOWNLOADS/$RADARR_CATEGORY" "$DECYPHARR_DOWNLOADS/$SONARR_CATEGORY"
 chmod 755 "$DECYPHARR_ROOT" "$DECYPHARR_MOUNT" 2>/dev/null || true
-chmod 775 "$DECYPHARR_DOWNLOADS" 2>/dev/null || true
+chmod 775 "$DECYPHARR_DOWNLOADS" \
+    "$DECYPHARR_DOWNLOADS/$RADARR_CATEGORY" "$DECYPHARR_DOWNLOADS/$SONARR_CATEGORY" 2>/dev/null || true
 log "SynoPlex configuration root: $STACK_DIR"
 log "SynoPlex state and Decypharr directories created/verified"
 
@@ -2074,12 +2076,22 @@ if [ -x "$ACLTOOL" ]; then
 
     acl_set_ro "$PLEXROOT" "$RADARR_USER"
     acl_set_rw "$MOVIES_ROOT" "$RADARR_USER"
+    # Radarr must be able to traverse PlexMediaServer/decypharr and read/write
+    # its own Decypharr category. Existing category directories may predate
+    # inherited ACLs, so apply permissions explicitly.
+    acl_set_ro "$STACK_DIR" "$RADARR_USER"
+    acl_set_ro "$DECYPHARR_ROOT" "$RADARR_USER"
     acl_set_rw "$DECYPHARR_DOWNLOADS" "$RADARR_USER"
+    acl_set_rw "$DECYPHARR_DOWNLOADS/$RADARR_CATEGORY" "$RADARR_USER"
     acl_set_ro "$DECYPHARR_MOUNT" "$RADARR_USER"
 
     acl_set_ro "$PLEXROOT" "$SONARR_USER"
     acl_set_rw "$SERIES_ROOT" "$SONARR_USER"
+    # Same rule for Sonarr and its own category directory.
+    acl_set_ro "$STACK_DIR" "$SONARR_USER"
+    acl_set_ro "$DECYPHARR_ROOT" "$SONARR_USER"
     acl_set_rw "$DECYPHARR_DOWNLOADS" "$SONARR_USER"
+    acl_set_rw "$DECYPHARR_DOWNLOADS/$SONARR_CATEGORY" "$SONARR_USER"
     acl_set_ro "$DECYPHARR_MOUNT" "$SONARR_USER"
 
     # qBittorrent is kept as a fallback/manual download client.
@@ -2598,4 +2610,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.0
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.1
