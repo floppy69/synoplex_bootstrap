@@ -1976,7 +1976,35 @@ else
 fi
 
 if [ -f /etc/fuse.conf ]; then
-    grep -Eq '^[[:space:]]*user_allow_other[[:space:]]*
+    grep -Eq '^[[:space:]]*user_allow_other[[:space:]]*$' /etc/fuse.conf || \
+        printf '\nuser_allow_other\n' >> /etc/fuse.conf
+else
+    printf 'user_allow_other\n' > /etc/fuse.conf 2>/dev/null || true
+fi
+
+# Older Decypharr SPKs require the package-local FUSE helpers to be restored
+# to root:root 4755 after install/upgrade. Newer SPKs do this themselves, but
+# keep the bootstrap repair for backward compatibility with already-installed
+# packages.
+if [ -d /var/packages/decypharr/target ]; then
+    if [ -d /var/packages/decypharr/target/etc ]; then
+        chmod 0755 /var/packages/decypharr/target/etc 2>/dev/null || true
+    fi
+    if [ -f /var/packages/decypharr/target/etc/fuse.conf ]; then
+        chmod 0644 /var/packages/decypharr/target/etc/fuse.conf 2>/dev/null || true
+    fi
+
+    for fuse_helper in \
+        /var/packages/decypharr/target/bin/fusermount \
+        /var/packages/decypharr/target/bin/fusermount3
+    do
+        [ -f "$fuse_helper" ] || continue
+        chown root:root "$fuse_helper" 2>/dev/null || true
+        chmod 4755 "$fuse_helper" 2>/dev/null || true
+    done
+    log "Decypharr package-local FUSE helpers verified"
+fi
+
 pkg_user() {
     pkg="$1"
     fallback="sc-$pkg"
