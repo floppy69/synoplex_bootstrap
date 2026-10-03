@@ -294,7 +294,7 @@ decypharr
 paths
 ```
 
-API keys for Radarr, Sonarr, and Prowlarr are collected from their native configuration files when available.
+API keys for Radarr, Sonarr, Prowlarr, and Bazarr are collected from their native configuration files when available. qBittorrent receives a dedicated WebUI account (default username `synoplex`); when `QBIT_PASSWORD` is not supplied, the bootstrap generates a random password and stores it only in the protected `stack.json`.
 
 The AllDebrid key is read from existing compatible locations inside `stack.json`. New or updated bootstrap-managed configuration stores it under `decypharr.alldebrid_api_key`. If no compatible key can be found, the bootstrap prompts for it without echoing the secret to the terminal.
 
@@ -348,9 +348,40 @@ Inspect synchronization logs:
 tail -100 /var/packages/decypharr/var/stack-sync.log
 ```
 
+## Automatic service integration
+
+When `CONFIGURE_SERVICES=1` (the default), the bootstrap does not stop after package installation. It configures and validates the service graph automatically:
+
+```text
+Prowlarr
+   +--> Radarr  (Full Sync)
+   +--> Sonarr  (Full Sync)
+
+Radarr
+   +--> Decypharr  priority 1 / category radarr
+   +--> qBittorrent priority 10 / category radarr
+
+Sonarr
+   +--> Decypharr  priority 1 / category sonarr
+   +--> qBittorrent priority 10 / category sonarr
+
+Bazarr
+   +--> Radarr
+   +--> Sonarr
+
+Decypharr
+   +--> AllDebrid
+
+qBittorrent
+   +--> category radarr -> dedicated Radarr download directory
+   +--> category sonarr -> dedicated Sonarr download directory
+```
+
+The bootstrap retrieves the native API keys for Radarr, Sonarr, Prowlarr, and Bazarr, configures qBittorrent WebUI credentials, stores the required integration values in `stack.json`, and runs connection tests. If an essential integration fails, the bootstrap exits with an error instead of reporting a successful deployment.
+
 ## Radarr and Sonarr download clients
 
-Both applications must contain **two** enabled qBittorrent-compatible clients.
+Both applications are automatically configured with **two** enabled qBittorrent-compatible clients.
 
 ### Radarr
 
@@ -358,7 +389,7 @@ Decypharr:
 
 ```text
 Name     : Decypharr
-Host     : NAS address
+Host     : 127.0.0.1
 Port     : 8282
 Category : radarr
 Priority : 1
@@ -368,7 +399,7 @@ qBittorrent:
 
 ```text
 Name     : qBittorrent
-Host     : NAS address
+Host     : 127.0.0.1
 Port     : configured qBittorrent port
 Category : radarr
 Priority : 10
@@ -380,7 +411,7 @@ Decypharr:
 
 ```text
 Name     : Decypharr
-Host     : NAS address
+Host     : 127.0.0.1
 Port     : 8282
 Category : sonarr
 Priority : 1
@@ -390,13 +421,13 @@ qBittorrent:
 
 ```text
 Name     : qBittorrent
-Host     : NAS address
+Host     : 127.0.0.1
 Port     : configured qBittorrent port
 Category : sonarr
 Priority : 10
 ```
 
-The n8n workflow reconciles these clients from `stack.json` and uses the *Arr API `downloadClientId` value to select the client per grab.
+The bootstrap creates or updates these clients idempotently. The n8n workflow then reconciles them from `stack.json` and uses the *Arr API `downloadClientId` value to select the client per grab. qBittorrent authentication uses the native WebUI login/SID mechanism, not a custom bearer token.
 
 ## n8n workflow
 
@@ -452,7 +483,7 @@ Open:
 http://NAS:9696
 ```
 
-Configure Radarr and Sonarr as Prowlarr applications using the URLs and API keys stored in `stack.json`.
+The bootstrap automatically creates or updates the Radarr and Sonarr applications in Prowlarr with **Full Sync**, tests the application connections, and requests an indexer synchronization. Indexers themselves still need to exist in Prowlarr before there is anything useful to synchronize.
 
 ## Bazarr
 
@@ -464,7 +495,7 @@ Open:
 http://NAS:6767
 ```
 
-Configure Radarr and Sonarr using their respective URLs and API keys from `stack.json`, then configure subtitle languages and providers.
+The bootstrap automatically enables Bazarr's Radarr and Sonarr integrations using their local URLs and API keys, then validates the Bazarr settings API. Subtitle languages, language profiles, and subtitle providers remain user policy and are intentionally not guessed by the installer.
 
 ## Plex
 
