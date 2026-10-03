@@ -1878,38 +1878,82 @@ if is_installed decypharr; then
 fi
 
 # ---------------------------------------------------------------------------
-# Automatically configure Radarr/Sonarr to use Decypharr
+# Service integration
+#   Prowlarr -> Radarr + Sonarr (Full Sync)
+#   Radarr/Sonarr -> Decypharr (primary) + qBittorrent (fallback)
+#   Bazarr -> Radarr + Sonarr
 # ---------------------------------------------------------------------------
 
-if [ "$CONFIGURE_SERVICES" = "1" ] && is_installed decypharr; then
-    export DECYPHARR_HOST="$NAS_IP"
+if [ "$CONFIGURE_SERVICES" = "1" ]; then
+    for required_pkg in radarr sonarr prowlarr qbittorrent bazarr decypharr; do
+        if ! is_installed "$required_pkg"; then
+            err "Cannot interconnect stack: missing package $required_pkg"
+            exit 1
+        fi
+    done
+
+    [ -n "$RADARR_KEY" ] || { err "Radarr API key is unavailable."; exit 1; }
+    [ -n "$SONARR_KEY" ] || { err "Sonarr API key is unavailable."; exit 1; }
+    [ -n "$PROWLARR_KEY" ] || { err "Prowlarr API key is unavailable."; exit 1; }
+    [ -n "$BAZARR_KEY" ] || { err "Bazarr API key is unavailable."; exit 1; }
+    [ -n "$QBIT_USERNAME" ] || { err "qBittorrent username is empty."; exit 1; }
+    [ -n "$QBIT_PASSWORD" ] || { err "qBittorrent password is empty."; exit 1; }
+
     export RADARR_URL="http://127.0.0.1:$RADARR_PORT"
     export SONARR_URL="http://127.0.0.1:$SONARR_PORT"
+    export PROWLARR_URL="http://127.0.0.1:$PROWLARR_PORT"
+    export BAZARR_URL="http://127.0.0.1:$BAZARR_PORT"
+    export DECYPHARR_URL="http://127.0.0.1:$DECYPHARR_PORT"
+    export QBIT_URL="http://127.0.0.1:$QBIT_PORT"
     export RADARR_ROOT="$MOVIES_ROOT"
     export SONARR_ROOT="$SERIES_ROOT"
     export RADARR_CATEGORY SONARR_CATEGORY
+    export RADARR_KEY SONARR_KEY PROWLARR_KEY BAZARR_KEY
+    export QBIT_USERNAME QBIT_PASSWORD
 
-    "$PYTHON" <<'PY' || warn "Automatic Radarr/Sonarr configuration was not fully applied."
+    if ! "$PYTHON" <<'PY_INTEGRATE'
+import copy
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 
-DECY_HOST = os.environ["DECYPHARR_HOST"]
-DECY_PORT = int(os.environ.get("DECYPHARR_PORT", "8282"))
+RADARR = os.environ["RADARR_URL"].rstrip("/")
+SONARR = os.environ["SONARR_URL"].rstrip("/")
+PROWLARR = os.environ["PROWLARR_URL"].rstrip("/")
+BAZARR = os.environ["BAZARR_URL"].rstrip("/")
+DECYPHARR = os.environ["DECYPHARR_URL"].rstrip("/")
+QBIT = os.environ["QBIT_URL"].rstrip("/")
+
+RADARR_KEY = os.environ["RADARR_KEY"]
+SONARR_KEY = os.environ["SONARR_KEY"]
+PROWLARR_KEY = os.environ["PROWLARR_KEY"]
+BAZARR_KEY = os.environ["BAZARR_KEY"]
+QBIT_USERNAME = os.environ["QBIT_USERNAME"]
+QBIT_PASSWORD = os.environ["QBIT_PASSWORD"]
+
+RADARR_ROOT = os.environ["RADARR_ROOT"]
+SONARR_ROOT = os.environ["SONARR_ROOT"]
+RADARR_CATEGORY = os.environ.get("RADARR_CATEGORY", "radarr")
+SONARR_CATEGORY = os.environ.get("SONARR_CATEGORY", "sonarr")
+
+failures = []
 
 
-def request(base, api_key, method, path, payload=None):
-    url = base.rstrip("/") + path
+def api(base, key, method, path, payload=None, timeout=20):
+    url = base + path
     body = None
-    headers = {"X-Api-Key": api_key, "Accept": "application/json"}
+    headers = {"Accept": "application/json"}
+    if key:
+        headers["X-Api-Key"] = key
     if payload is not None:
         body = json.dumps(payload).encode("utf-8")
         headers["Content-Type"] = "application/json"
     req = urllib.request.Request(url, data=body, headers=headers, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=15) as r:
-            raw = r.read().decode("utf-8", "replace")
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            raw = response.read().decode("utf-8", "replace")
             return json.loads(raw) if raw.strip() else None
     except urllib.error.HTTPError as e:
         detail = e.read().decode("utf-8", "replace")
@@ -1918,80 +1962,270 @@ def request(base, api_key, method, path, payload=None):
         raise RuntimeError(f"{method} {url} -> connection failed: {e.reason}") from e
 
 
-def set_field(client, name, value):
-    for f in client.get("fields", []):
-        if f.get("name") == name:
-            f["value"] = value
+def set_field(provider, name, value):
+    wanted = name.lower()
+    for field in provider.get("fields", []):
+        if str(field.get("name", "")).lower() == wanted:
+            field["value"] = value
             return True
     return False
 
 
-def configure_arr(name, base, api_key, category, root_folder):
-    if not api_key:
-        print(f"[{name}] API key missing, configuration skipped")
+def qbit_login():
+    data = urllib.parse.urlencode({
+        "username": QBIT_USERNAME,
+        "password": QBIT_PASSWORD,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        QBIT + "/api/v2/auth/login",
+        data=data,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as response:
+        cookie = response.headers.get("Set-Cookie", "")
+        body = response.read().decode("utf-8", "replace").strip()
+        if body != "Ok.":
+            raise RuntimeError(f"qBittorrent login rejected: {body!r}")
+        if not cookie:
+            raise RuntimeError("qBittorrent login succeeded without returning a SID cookie")
+        return cookie.split(";", 1)[0]
+
+
+def qbit_get(path, cookie):
+    req = urllib.request.Request(
+        QBIT + path,
+        headers={"Cookie": cookie, "Referer": QBIT + "/"},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=15) as response:
+        return response.read().decode("utf-8", "replace")
+
+
+def ensure_root(base, key, root):
+    roots = api(base, key, "GET", "/api/v3/rootfolder") or []
+    target = root.rstrip("/")
+    if any(str(x.get("path", "")).rstrip("/") == target for x in roots):
         return
+    api(base, key, "POST", "/api/v3/rootfolder", {"path": root})
 
-    schemas = request(base, api_key, "GET", "/api/v3/downloadclient/schema") or []
-    schema = None
-    for s in schemas:
-        impl = str(s.get("implementation", ""))
-        impl_name = str(s.get("implementationName", ""))
-        if "qbittorrent" in (impl + impl_name).lower():
-            schema = s
-            break
-    if schema is None:
-        raise RuntimeError(f"[{name}] qBittorrent schema not found")
 
-    client = json.loads(json.dumps(schema))
-    client["name"] = "Decypharr"
+def qbit_schema(base, key):
+    schemas = api(base, key, "GET", "/api/v3/downloadclient/schema") or []
+    for schema in schemas:
+        impl = (str(schema.get("implementation", "")) + " " +
+                str(schema.get("implementationName", ""))).lower()
+        if "qbittorrent" in impl:
+            return schema
+    raise RuntimeError("qBittorrent download-client schema not found")
+
+
+def upsert_download_client(arr_name, base, key, schema, client_name, priority,
+                           host, port, category, username, password):
+    clients = api(base, key, "GET", "/api/v3/downloadclient") or []
+    existing = next(
+        (x for x in clients if str(x.get("name", "")).lower() == client_name.lower()),
+        None,
+    )
+
+    client = copy.deepcopy(existing if existing else schema)
+    if not existing:
+        client.pop("id", None)
+
+    client["name"] = client_name
     client["enable"] = True
-    client["priority"] = 1
+    client["priority"] = priority
     client["removeCompletedDownloads"] = True
     client["removeFailedDownloads"] = False
     client["tags"] = []
 
-    set_field(client, "host", DECY_HOST)
-    set_field(client, "port", DECY_PORT)
+    set_field(client, "host", host)
+    set_field(client, "port", int(port))
     set_field(client, "useSsl", False)
     set_field(client, "urlBase", "")
-    set_field(client, "username", base.rstrip("/"))
-    set_field(client, "password", api_key)
-    set_field(client, "category", category)\n    set_field(client, "movieCategory", category)\n    set_field(client, "tvCategory", category)
+    set_field(client, "apiKey", "")
+    set_field(client, "username", username)
+    set_field(client, "password", password)
+    set_field(client, "category", category)
+    set_field(client, "movieCategory", category)
+    set_field(client, "tvCategory", category)
 
-    existing = request(base, api_key, "GET", "/api/v3/downloadclient") or []
-    found = next((x for x in existing if str(x.get("name", "")).lower() == "decypharr"), None)
-    if found:
-        client["id"] = found["id"]
-        request(base, api_key, "PUT", f"/api/v3/downloadclient/{found['id']}", client)
-        print(f"[{name}] Decypharr client updated")
+    if existing:
+        api(base, key, "PUT", f"/api/v3/downloadclient/{existing['id']}", client)
+        print(f"[OK] {arr_name}: updated download client {client_name}")
     else:
-        request(base, api_key, "POST", "/api/v3/downloadclient", client)
-        print(f"[{name}] Decypharr client created")
-
-    roots = request(base, api_key, "GET", "/api/v3/rootfolder") or []
-    norm = lambda p: str(p).rstrip("/")
-    if not any(norm(x.get("path", "")) == norm(root_folder) for x in roots):
-        try:
-            request(base, api_key, "POST", "/api/v3/rootfolder", {"path": root_folder})
-            print(f"[{name}] root folder added: {root_folder}")
-        except Exception as e:
-            print(f"[{name}] root folder was not added automatically: {e}")
+        api(base, key, "POST", "/api/v3/downloadclient", client)
+        print(f"[OK] {arr_name}: created download client {client_name}")
 
 
-failures = []
-for args in (
-    ("Radarr", os.environ["RADARR_URL"], os.environ.get("RADARR_KEY", ""), os.environ.get("RADARR_CATEGORY", "radarr"), os.environ["RADARR_ROOT"]),
-    ("Sonarr", os.environ["SONARR_URL"], os.environ.get("SONARR_KEY", ""), os.environ.get("SONARR_CATEGORY", "sonarr"), os.environ["SONARR_ROOT"]),
+def configure_arr(arr_name, base, key, root, category):
+    ensure_root(base, key, root)
+    schema = qbit_schema(base, key)
+
+    # Decypharr's qBittorrent-compatible authentication uses the calling
+    # Arr URL as username and the Arr API key as password.
+    upsert_download_client(
+        arr_name, base, key, schema,
+        "Decypharr", 1,
+        "127.0.0.1", int(urllib.parse.urlsplit(DECYPHARR).port or 8282),
+        category, base, key,
+    )
+
+    upsert_download_client(
+        arr_name, base, key, schema,
+        "qBittorrent", 10,
+        "127.0.0.1", int(urllib.parse.urlsplit(QBIT).port or 8080),
+        category, QBIT_USERNAME, QBIT_PASSWORD,
+    )
+
+    # Ask the Arr application to validate every configured download client.
+    api(base, key, "POST", "/api/v3/downloadclient/testall", {})
+    api(base, key, "GET", "/api/v3/system/status")
+    print(f"[OK] {arr_name}: download clients and API validated")
+
+
+def prowlarr_schema(implementation):
+    schemas = api(PROWLARR, PROWLARR_KEY, "GET", "/api/v1/applications/schema") or []
+    wanted = implementation.lower()
+    for schema in schemas:
+        impl = str(schema.get("implementation", "")).lower()
+        impl_name = str(schema.get("implementationName", "")).lower()
+        if impl == wanted or impl_name == wanted:
+            return schema
+    raise RuntimeError(f"Prowlarr application schema not found: {implementation}")
+
+
+def upsert_prowlarr_app(name, arr_url, arr_key):
+    schema = prowlarr_schema(name)
+    existing_apps = api(PROWLARR, PROWLARR_KEY, "GET", "/api/v1/applications") or []
+    existing = next(
+        (
+            x for x in existing_apps
+            if str(x.get("implementation", "")).lower() == name.lower()
+            or str(x.get("name", "")).lower() == name.lower()
+        ),
+        None,
+    )
+
+    app = copy.deepcopy(existing if existing else schema)
+    if not existing:
+        app.pop("id", None)
+
+    app["name"] = name
+    app["syncLevel"] = "fullSync"
+    app["tags"] = []
+
+    set_field(app, "prowlarrUrl", PROWLARR)
+    set_field(app, "baseUrl", arr_url)
+    set_field(app, "apiKey", arr_key)
+
+    if existing:
+        api(PROWLARR, PROWLARR_KEY, "PUT", f"/api/v1/applications/{existing['id']}", app)
+        print(f"[OK] Prowlarr: updated {name} application")
+    else:
+        api(PROWLARR, PROWLARR_KEY, "POST", "/api/v1/applications", app)
+        print(f"[OK] Prowlarr: created {name} application")
+
+
+def bazarr_request(method, path, form=None):
+    url = BAZARR + path
+    body = None
+    headers = {"X-API-KEY": BAZARR_KEY, "Accept": "application/json"}
+    if form is not None:
+        body = urllib.parse.urlencode(form).encode("utf-8")
+        headers["Content-Type"] = "application/x-www-form-urlencoded"
+    req = urllib.request.Request(url, data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as response:
+            raw = response.read().decode("utf-8", "replace")
+            if not raw.strip():
+                return None
+            try:
+                return json.loads(raw)
+            except json.JSONDecodeError:
+                return raw
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")
+        raise RuntimeError(f"{method} {url} -> HTTP {e.code}: {detail[:1000]}") from e
+
+
+def configure_bazarr():
+    form = {
+        "settings-general-use_sonarr": "true",
+        "settings-sonarr-ip": "127.0.0.1",
+        "settings-sonarr-port": str(urllib.parse.urlsplit(SONARR).port or 8989),
+        "settings-sonarr-base_url": "/",
+        "settings-sonarr-ssl": "false",
+        "settings-sonarr-apikey": SONARR_KEY,
+        "settings-general-use_radarr": "true",
+        "settings-radarr-ip": "127.0.0.1",
+        "settings-radarr-port": str(urllib.parse.urlsplit(RADARR).port or 7878),
+        "settings-radarr-base_url": "/",
+        "settings-radarr-ssl": "false",
+        "settings-radarr-apikey": RADARR_KEY,
+    }
+    bazarr_request("POST", "/api/system/settings", form)
+    settings = bazarr_request("GET", "/api/system/settings")
+    if not isinstance(settings, dict):
+        raise RuntimeError("Bazarr settings API did not return JSON after configuration")
+    print("[OK] Bazarr: Radarr and Sonarr integrations configured")
+
+
+for label, func in (
+    ("qBittorrent", lambda: qbit_get("/api/v2/app/version", qbit_login())),
+    ("Radarr", lambda: configure_arr("Radarr", RADARR, RADARR_KEY, RADARR_ROOT, RADARR_CATEGORY)),
+    ("Sonarr", lambda: configure_arr("Sonarr", SONARR, SONARR_KEY, SONARR_ROOT, SONARR_CATEGORY)),
+    ("Prowlarr/Radarr", lambda: upsert_prowlarr_app("Radarr", RADARR, RADARR_KEY)),
+    ("Prowlarr/Sonarr", lambda: upsert_prowlarr_app("Sonarr", SONARR, SONARR_KEY)),
+    ("Bazarr", configure_bazarr),
 ):
     try:
-        configure_arr(*args)
-    except Exception as e:
-        failures.append(f"{args[0]}: {e}")
-        print(f"[{args[0]}] ERROR: {e}")
+        result = func()
+        if label == "qBittorrent":
+            print(f"[OK] qBittorrent: API authenticated, version={str(result).strip()}")
+    except Exception as exc:
+        failures.append(f"{label}: {exc}")
+        print(f"[ERROR] {label}: {exc}")
+
+if not failures:
+    try:
+        api(PROWLARR, PROWLARR_KEY, "POST", "/api/v1/applications/testall", {})
+        print("[OK] Prowlarr: application tests completed")
+    except Exception as exc:
+        failures.append(f"Prowlarr tests: {exc}")
+        print(f"[ERROR] Prowlarr tests: {exc}")
+
+if not failures:
+    try:
+        api(
+            PROWLARR,
+            PROWLARR_KEY,
+            "POST",
+            "/api/v1/command",
+            {"name": "ApplicationIndexerSync"},
+        )
+        print("[OK] Prowlarr: indexer synchronization requested")
+    except Exception as exc:
+        # The applications are already connected; command naming may differ
+        # across Prowlarr versions, so report this as a warning only.
+        print(f"[WARN] Prowlarr: unable to trigger immediate indexer sync: {exc}")
 
 if failures:
+    print("")
+    print("Service integration failures:")
+    for failure in failures:
+        print(" - " + failure)
     raise SystemExit(1)
-PY
+
+print("")
+print("[OK] SynoPlex service integration complete")
+PY_INTEGRATE
+    then
+        err "Service interconnection failed. The bootstrap will not report a successful deployment."
+        exit 1
+    fi
+
+    log "Prowlarr, Radarr, Sonarr, Bazarr, Decypharr and qBittorrent are interconnected"
 fi
 
 # ---------------------------------------------------------------------------
