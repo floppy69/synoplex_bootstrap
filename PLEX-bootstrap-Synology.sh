@@ -1171,6 +1171,22 @@ if is_installed bazarr; then
     done
 fi
 
+# Keep qBittorrent credentials stable across bootstrap reruns. An explicit
+# QBIT_PASSWORD environment variable always wins; otherwise reuse stack.json.
+if [ -z "$QBIT_PASSWORD" ] && [ -f "$STACK_JSON" ]; then
+    QBIT_PASSWORD="$(
+        "$PYTHON" - "$STACK_JSON" <<'PY_QBIT_EXISTING'
+import json, sys
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        cfg = json.load(f)
+    print(str(cfg.get("qbittorrent", {}).get("password", "")))
+except Exception:
+    pass
+PY_QBIT_EXISTING
+    )"
+fi
+
 if [ "$CONFIGURE_SERVICES" = "1" ] && is_installed qbittorrent; then
     if [ -z "$QBIT_PASSWORD" ]; then
         QBIT_PASSWORD="$("$PYTHON" - <<'PY_QBIT_PASSWORD'
@@ -2282,7 +2298,7 @@ fi
 # ---------------------------------------------------------------------------
 
 printf '\n============================================================\n'
-printf '   PLEX + RADARR + SONARR + DECYPHARR - RAPPORT\n'
+printf '   SYNOPLEX FULL STACK - REPORT\n'
 printf '============================================================\n'
 printf 'NAS                 : %s\n' "$NAS_IP"
 printf 'Plex                : http://%s:%s/web\n' "$NAS_IP" "$PLEX_PORT"
@@ -2296,6 +2312,9 @@ printf 'API locale Radarr   : http://127.0.0.1:%s\n' "$RADARR_PORT"
 printf 'API locale Sonarr   : http://127.0.0.1:%s\n' "$SONARR_PORT"
 printf 'Radarr category     : %s\n' "$RADARR_CATEGORY"
 printf 'Sonarr category     : %s\n' "$SONARR_CATEGORY"
+printf 'Service integration : %s\n' "$CONFIGURE_SERVICES"
+printf 'Integration graph   : Prowlarr -> Radarr/Sonarr; Bazarr -> Radarr/Sonarr\n'
+printf 'Download clients    : Decypharr priority 1; qBittorrent priority 10\n'
 printf '\n'
 printf 'Movies              : %s\n' "$MOVIES_ROOT"
 printf 'Series              : %s\n' "$SERIES_ROOT"
