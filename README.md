@@ -52,6 +52,22 @@ Radarr and Sonarr keep **both** Decypharr and qBittorrent configured. n8n explic
 
 The preferred route is Decypharr. qBittorrent is used as fallback when Decypharr explicitly refuses a grab. A timeout or ambiguous network failure must **not** trigger an automatic fallback, because the first request may already have been accepted and blindly retrying through qBittorrent could create a duplicate download.
 
+## Release policy
+
+SynoPlex reconciles the release policy across n8n, Prowlarr, Radarr, and Sonarr instead of relying on the orchestrator alone.
+
+- Torrent releases require at least **11 seeders** (`> 10`).
+- Radarr uses the strict profile `AUTO Movies - 2160p > 1080p > 720p`.
+- Sonarr uses the strict profile `AUTO Series - 2160p > 1080p > 720p`.
+- Accepted French release markers include VFF, TRUEFRENCH, VF2, VFI, VOF, FRENCH, FRE, FRFR, FR, and VOSTFR.
+- MULTi is accepted by the strict title policy only when accompanied by an explicit French marker.
+- VFQ / French Canadian releases are explicitly rejected.
+- Existing movies and series are reconciled back to their strict profile on bootstrap reruns.
+- Prowlarr stores the application minimum-seeder policy and Radarr/Sonarr receive the same threshold. Individual unreachable indexers are reported as warnings rather than making the entire bootstrap fail.
+
+Decypharr uses its native `symlink` post-download action for debrid content. This does not mean that a second full local payload is copied into the Decypharr download directory: Decypharr exposes the mounted debrid file to the Arr application, which then imports it into the media library. Decypharr does not implement a native `move` download action.
+
+
 ## Reference files
 
 Bootstrap script:
