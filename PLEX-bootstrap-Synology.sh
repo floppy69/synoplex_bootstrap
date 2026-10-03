@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.6.3
+# Version 8.6.4
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -40,7 +40,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.6.3"
+SCRIPT_VERSION="8.6.4"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -49,7 +49,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6.3$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6.4$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -1333,22 +1333,45 @@ PY_QBIT_CONFIG
         synopkg start qbittorrent >"$TMPBASE/start-qbittorrent-configured.log" 2>&1 || true
 
         i=0
+        qbit_login_ok=0
+        qbit_version=""
         while [ "$i" -lt 30 ]; do
-            login="$(
+            login_body="$TMPBASE/qbit-login.body"
+            login_code="$(
                 curl -sS --max-time 5 \
+                  -o "$login_body" \
+                  -w '%{http_code}' \
                   -c "$TMPBASE/qbit.cookies" \
                   -H "Referer: http://127.0.0.1:$QBIT_PORT/" \
                   --data-urlencode "username=$QBIT_USERNAME" \
                   --data-urlencode "password=$QBIT_PASSWORD" \
                   "http://127.0.0.1:$QBIT_PORT/api/v2/auth/login" 2>/dev/null || true
             )"
-            [ "$login" = "Ok." ] && break
+            login="$(cat "$login_body" 2>/dev/null || true)"
+
+            case "$login_code:$login" in
+                2??:Fails.*)
+                    ;;
+                2??:*)
+                    qbit_version="$(
+                        curl -fsS --max-time 5 \
+                          -b "$TMPBASE/qbit.cookies" \
+                          -H "Referer: http://127.0.0.1:$QBIT_PORT/" \
+                          "http://127.0.0.1:$QBIT_PORT/api/v2/app/version" 2>/dev/null || true
+                    )"
+                    if [ -n "$qbit_version" ]; then
+                        qbit_login_ok=1
+                        break
+                    fi
+                    ;;
+            esac
+
             sleep 1
             i=$((i + 1))
         done
 
-        if [ "$login" = "Ok." ]; then
-            log "qBittorrent WebUI credentials configured and API login verified"
+        if [ "$qbit_login_ok" = "1" ]; then
+            log "qBittorrent WebUI credentials configured and API verified ($qbit_version)"
         else
             warn "qBittorrent credentials were written but API login could not be verified."
         fi
@@ -2063,14 +2086,22 @@ def qbit_login():
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=15) as response:
-        cookie = response.headers.get("Set-Cookie", "")
-        body = response.read().decode("utf-8", "replace").strip()
-        if body != "Ok.":
-            raise RuntimeError(f"qBittorrent login rejected: {body!r}")
-        if not cookie:
-            raise RuntimeError("qBittorrent login succeeded without returning a SID cookie")
-        return cookie.split(";", 1)[0]
+    try:
+        with urllib.request.urlopen(req, timeout=15) as response:
+            cookie = response.headers.get("Set-Cookie", "")
+            body = response.read().decode("utf-8", "replace").strip()
+            status = int(getattr(response, "status", 200) or 200)
+            if body == "Fails.":
+                raise RuntimeError("qBittorrent login rejected: Fails.")
+            if status < 200 or status >= 300:
+                raise RuntimeError(f"qBittorrent login rejected: HTTP {status}")
+            # qBittorrent <= 5.1 returns 200 + "Ok."; qBittorrent 5.2+
+            # can return 204 No Content. Session cookie names may also evolve,
+            # so keep the full first cookie pair instead of assuming SID=.
+            return cookie.split(";", 1)[0] if cookie else ""
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace").strip()
+        raise RuntimeError(f"qBittorrent login rejected: HTTP {e.code} {detail}") from e
 
 
 def qbit_get(path, cookie):
@@ -2419,4 +2450,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6.3
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6.4
