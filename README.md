@@ -214,6 +214,8 @@ others             -> no direct access
 
 The file remains protected with Unix mode `0600` for its owner, while DSM ACL entries grant narrowly scoped access where required.
 
+DSM account names are resolved through Synology's native `synouser` utility when normal Unix `id` lookup does not resolve them. This handles DSM-local SMB users whose canonical account name uses different casing.
+
 n8n should mount the configuration and media locations using paths that match the values stored in `stack.json`. The defaults are:
 
 ```text
