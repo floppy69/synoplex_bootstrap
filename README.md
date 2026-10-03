@@ -110,14 +110,13 @@ On a new installation, SynoPlex configuration/state and Decypharr default to the
 |
 +-- Media/
     +-- Plex/
-        +-- media/
-        |   +-- Movies/
-        |   +-- Series/
+        +-- Movies/
+        +-- Series/
         +-- downloads/
             +-- qbittorrent/
 ```
 
-The bootstrap does not assume a specific Synology volume number. It detects the existing Plex shared folder and uses `/volumeX/PlexMediaServer` as the SynoPlex configuration/state root. Media defaults to `/volumeX/Media/Plex`, and all paths can be overridden explicitly.
+The bootstrap does not assume a specific Synology volume number. It detects the existing Plex shared folder and uses `/volumeX/PlexMediaServer` as the SynoPlex configuration/state root. Media defaults to `/volumeX/Media/Plex`. Once the Plex data root is chosen, the bootstrap always creates `Movies/` and `Series/` directly below it. The Plex data root is not allowed to be inside `/volumeX/PlexMediaServer`; configuration/state and media are deliberately kept separate.
 
 ## Default ports
 
@@ -189,9 +188,8 @@ NAS address          : auto-detected primary IPv4 address
 stack.json directory : /volumeX/PlexMediaServer
 watchlist-state.json : /volumeX/PlexMediaServer/watchlist-state.json
 Plex data root       : /volumeX/Media/Plex
-Plex library root    : /volumeX/Media/Plex/media
-Movies               : /volumeX/Media/Plex/media/Movies
-Series               : /volumeX/Media/Plex/media/Series
+Movies               : /volumeX/Media/Plex/Movies
+Series               : /volumeX/Media/Plex/Series
 Decypharr root       : /volumeX/PlexMediaServer/decypharr
 Decypharr mount      : /volumeX/PlexMediaServer/decypharr/mount
 Decypharr downloads  : /volumeX/PlexMediaServer/decypharr/downloads
