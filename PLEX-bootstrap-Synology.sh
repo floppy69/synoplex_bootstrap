@@ -20,9 +20,8 @@
 #   STACK_JSON=/volumeX/PlexMediaServer/stack.json
 #   WATCHLIST_STATE=/volumeX/PlexMediaServer/watchlist-state.json
 #   PLEX_DATA_ROOT=/volumeX/Media/Plex
-#   PLEX_LIBRARY_ROOT=/volumeX/Media/Plex/media
-#   MOVIES_ROOT=/volumeX/Media/Plex/media/Movies
-#   SERIES_ROOT=/volumeX/Media/Plex/media/Series
+#   PLEX_DATA_ROOT=/volumeX/Media/Plex
+#   Movies and Series are always created directly below PLEX_DATA_ROOT
 #   DECYPHARR_ROOT=/volumeX/PlexMediaServer/decypharr
 #   DECYPHARR_MOUNT=/volumeX/PlexMediaServer/decypharr/mount
 #   DECYPHARR_DOWNLOADS=/volumeX/PlexMediaServer/decypharr/downloads
@@ -50,7 +49,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.5.1$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -385,16 +384,17 @@ N8N_CONFIG_ROOT="$(trim_trailing_slash "$N8N_CONFIG_ROOT")"
 N8N_MEDIA_ROOT="${N8N_MEDIA_ROOT:-$(ask "n8n mount path for the media share/root" "/data/media")}"
 N8N_MEDIA_ROOT="$(trim_trailing_slash "$N8N_MEDIA_ROOT")"
 
-PLEX_DATA_ROOT="${PLEX_DATA_ROOT:-$(ask "Plex data root" "$DEFAULT_PLEX_DATA_ROOT")}" 
+PLEX_DATA_ROOT="${PLEX_DATA_ROOT:-$(ask "Plex data root (must be outside the PlexMediaServer configuration root)" "$DEFAULT_PLEX_DATA_ROOT")}" 
 PLEX_DATA_ROOT="$(trim_trailing_slash "$PLEX_DATA_ROOT")"
 MEDIA_ROOT="${MEDIA_ROOT:-$(ask "NAS media share/root corresponding to the n8n media mount" "$(dirname "$PLEX_DATA_ROOT")")}"
 MEDIA_ROOT="$(trim_trailing_slash "$MEDIA_ROOT")"
-PLEX_LIBRARY_ROOT="${PLEX_LIBRARY_ROOT:-$(ask "Plex library root" "$PLEX_DATA_ROOT/media")}" 
-PLEX_LIBRARY_ROOT="$(trim_trailing_slash "$PLEX_LIBRARY_ROOT")"
-MOVIES_ROOT="${MOVIES_ROOT:-$(ask "Movies library directory" "$PLEX_LIBRARY_ROOT/Movies")}" 
-MOVIES_ROOT="$(trim_trailing_slash "$MOVIES_ROOT")"
-SERIES_ROOT="${SERIES_ROOT:-$(ask "Series library directory" "$PLEX_LIBRARY_ROOT/Series")}" 
-SERIES_ROOT="$(trim_trailing_slash "$SERIES_ROOT")"
+
+# Keep media layout deterministic: Plex data root directly contains Movies and Series.
+# PLEX_LIBRARY_ROOT is retained internally as an alias for compatibility with the
+# ACL code and older stack.json readers, but it is no longer user-configurable.
+PLEX_LIBRARY_ROOT="$PLEX_DATA_ROOT"
+MOVIES_ROOT="$PLEX_DATA_ROOT/Movies"
+SERIES_ROOT="$PLEX_DATA_ROOT/Series"
 
 DEFAULT_DECYPHARR_FROM_PLEX="$DEFAULT_DECYPHARR_ROOT"
 DECYPHARR_ROOT="${DECYPHARR_ROOT:-$(ask "Decypharr data root" "$DEFAULT_DECYPHARR_FROM_PLEX")}" 
@@ -463,7 +463,6 @@ for path_item in \
     "$WATCHLIST_STATE|watchlist-state.json" \
     "$PLEX_DATA_ROOT|Plex root" \
     "$MEDIA_ROOT|NAS media share/root" \
-    "$PLEX_LIBRARY_ROOT|Plex library" \
     "$MOVIES_ROOT|Movies library" \
     "$SERIES_ROOT|Series library" \
     "$DECYPHARR_ROOT|Decypharr root" \
@@ -491,6 +490,25 @@ validate_port "$DECYPHARR_PORT" "Decypharr port" || exit 1
 [ -n "$SONARR_CATEGORY" ] || { err "Sonarr category cannot be empty."; exit 1; }
 case "$RADARR_CATEGORY" in *[!A-Za-z0-9._-]*) err "Radarr category contains unsafe characters: $RADARR_CATEGORY"; exit 1 ;; esac
 case "$SONARR_CATEGORY" in *[!A-Za-z0-9._-]*) err "Sonarr category contains unsafe characters: $SONARR_CATEGORY"; exit 1 ;; esac
+
+# Configuration/state and media must never share the PlexMediaServer root.
+case "$PLEX_DATA_ROOT/" in
+    "$STACK_DIR/"*)
+        err "Plex data root must not be inside the PlexMediaServer configuration root."
+        err "Configuration root : $STACK_DIR"
+        err "Plex data root     : $PLEX_DATA_ROOT"
+        err "Choose a separate media location, for example $DEFAULT_VOLUME/Media/Plex."
+        exit 1
+        ;;
+esac
+case "$STACK_DIR/" in
+    "$PLEX_DATA_ROOT/"*)
+        err "PlexMediaServer configuration root must not be inside the Plex data root."
+        err "Configuration root : $STACK_DIR"
+        err "Plex data root     : $PLEX_DATA_ROOT"
+        exit 1
+        ;;
+esac
 
 PORT_LIST="$PLEX_PORT $RADARR_PORT $SONARR_PORT $PROWLARR_PORT $QBIT_PORT $BAZARR_PORT $DECYPHARR_PORT"
 for p1 in $PORT_LIST; do
@@ -544,7 +562,6 @@ printf 'n8n config root      : %s\n' "$N8N_CONFIG_ROOT"
 printf 'n8n media root       : %s\n' "$N8N_MEDIA_ROOT"
 printf 'NAS media root       : %s\n' "$MEDIA_ROOT"
 printf 'Plex data            : %s\n' "$PLEX_DATA_ROOT"
-printf 'Plex library         : %s\n' "$PLEX_LIBRARY_ROOT"
 printf 'Movies               : %s\n' "$MOVIES_ROOT"
 printf 'Series               : %s\n' "$SERIES_ROOT"
 printf 'Decypharr data       : %s\n' "$DECYPHARR_ROOT"
@@ -570,9 +587,9 @@ fi
 # Media paths can be prepared immediately. The PlexMediaServer shared folder
 # is deliberately not created here: on a fresh NAS, let the Plex package create
 # its DSM shared folder first.
-mkdir -p "$PLEX_DATA_ROOT" "$PLEX_LIBRARY_ROOT" "$MOVIES_ROOT" "$SERIES_ROOT" \
+mkdir -p "$PLEX_DATA_ROOT" "$MOVIES_ROOT" "$SERIES_ROOT" \
     "$QBIT_DOWNLOADS" "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$QBIT_DOWNLOADS/$SONARR_CATEGORY"
-chmod 755 "$PLEX_DATA_ROOT" "$PLEX_LIBRARY_ROOT" "$MOVIES_ROOT" "$SERIES_ROOT" 2>/dev/null || true
+chmod 755 "$PLEX_DATA_ROOT" "$MOVIES_ROOT" "$SERIES_ROOT" 2>/dev/null || true
 chmod 775 "$QBIT_DOWNLOADS" "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$QBIT_DOWNLOADS/$SONARR_CATEGORY" 2>/dev/null || true
 log "Media directory tree created/verified"
 
@@ -2366,4 +2383,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.5.1
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.6
