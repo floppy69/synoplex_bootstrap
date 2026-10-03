@@ -1207,6 +1207,7 @@ salt = secrets.token_bytes(16)
 digest = hashlib.pbkdf2_hmac("sha512", password.encode("utf-8"), salt, 100000, dklen=64)
 secret = base64.b64encode(salt).decode() + ":" + base64.b64encode(digest).decode()
 
+st = os.stat(path)
 with open(path, "r", encoding="utf-8", errors="replace") as f:
     lines = f.read().splitlines()
 
@@ -1250,6 +1251,11 @@ for key, value in updates.items():
 tmp = path + ".synoplex.tmp"
 with open(tmp, "w", encoding="utf-8") as f:
     f.write("\n".join(lines) + "\n")
+os.chmod(tmp, st.st_mode & 0o7777)
+try:
+    os.chown(tmp, st.st_uid, st.st_gid)
+except PermissionError:
+    pass
 os.replace(tmp, path)
 PY_QBIT_CONFIG
         chmod 600 "$QBIT_CONFIG" 2>/dev/null || true
@@ -2002,6 +2008,46 @@ def qbit_get(path, cookie):
         return response.read().decode("utf-8", "replace")
 
 
+def qbit_post(path, cookie, form):
+    data = urllib.parse.urlencode(form).encode("utf-8")
+    req = urllib.request.Request(
+        QBIT + path,
+        data=data,
+        headers={
+            "Cookie": cookie,
+            "Referer": QBIT + "/",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as response:
+        return response.read().decode("utf-8", "replace")
+
+
+def ensure_qbit_categories():
+    cookie = qbit_login()
+    raw = qbit_get("/api/v2/torrents/categories", cookie)
+    categories = json.loads(raw) if raw.strip() else {}
+    base = os.environ.get("QBIT_DOWNLOADS", "").rstrip("/")
+    for category in (RADARR_CATEGORY, SONARR_CATEGORY):
+        save_path = f"{base}/{category}" if base else ""
+        if category in categories:
+            qbit_post(
+                "/api/v2/torrents/editCategory",
+                cookie,
+                {"category": category, "savePath": save_path},
+            )
+            print(f"[OK] qBittorrent: updated category {category}")
+        else:
+            qbit_post(
+                "/api/v2/torrents/createCategory",
+                cookie,
+                {"category": category, "savePath": save_path},
+            )
+            print(f"[OK] qBittorrent: created category {category}")
+    return qbit_get("/api/v2/app/version", cookie)
+
+
 def ensure_root(base, key, root):
     roots = api(base, key, "GET", "/api/v3/rootfolder") or []
     target = root.rstrip("/")
@@ -2172,7 +2218,7 @@ def configure_bazarr():
 
 
 for label, func in (
-    ("qBittorrent", lambda: qbit_get("/api/v2/app/version", qbit_login())),
+    ("qBittorrent", ensure_qbit_categories),
     ("Radarr", lambda: configure_arr("Radarr", RADARR, RADARR_KEY, RADARR_ROOT, RADARR_CATEGORY)),
     ("Sonarr", lambda: configure_arr("Sonarr", SONARR, SONARR_KEY, SONARR_ROOT, SONARR_CATEGORY)),
     ("Prowlarr/Radarr", lambda: upsert_prowlarr_app("Radarr", RADARR, RADARR_KEY)),
