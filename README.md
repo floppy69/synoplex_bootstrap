@@ -116,7 +116,7 @@ On a new installation, SynoPlex configuration/state and Decypharr default to the
             +-- qbittorrent/
 ```
 
-The bootstrap does not assume a specific Synology volume number. It detects the existing Plex shared folder and uses `/volumeX/PlexMediaServer` as the SynoPlex configuration/state root. Media defaults to `/volumeX/Media/Plex`. Once the Plex data root is chosen, the bootstrap always creates `Movies/` and `Series/` directly below it. The Plex data root is not allowed to be inside `/volumeX/PlexMediaServer`; configuration/state and media are deliberately kept separate.
+The bootstrap does not assume a specific Synology volume number. It detects the existing Plex shared folder and uses `/volumeX/PlexMediaServer` as the SynoPlex configuration/state root. Media defaults to `/volumeX/Media/Plex`. Once the Plex data root is chosen, the bootstrap always creates `Movies/` and `Series/` directly below it. The Plex data root is not allowed to be inside `/volumeX/PlexMediaServer`; configuration/state and media are deliberately kept separate. The n8n path `/data/media` must map directly to that Plex data root.
 
 ## Default ports
 
@@ -217,8 +217,8 @@ The file remains protected with Unix mode `0600` for its owner, while DSM ACL en
 n8n should mount the configuration and media locations using paths that match the values stored in `stack.json`. The defaults are:
 
 ```text
-//NAS/PlexMediaServer -> /data/PlexMediaServer
-//NAS/<media-share>   -> /data/media
+//NAS/PlexMediaServer          -> /data/PlexMediaServer
+<Plex data root on docker host> -> /data/media
 ```
 
 The orchestrator reads `SYNOPLEX_STACK_JSON` when that environment variable is set; otherwise it uses:
