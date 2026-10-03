@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.7.7
+# Version 8.7.8
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -39,7 +39,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.7.7"
+SCRIPT_VERSION="8.7.8"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -48,7 +48,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.7$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.8$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -1611,7 +1611,7 @@ decy.update({
     "mount_path": os.environ["DECYPHARR_MOUNT"],
     "download_folder": os.environ["DECYPHARR_DOWNLOADS"],
     "categories": [os.environ["RADARR_CATEGORY"], os.environ["SONARR_CATEGORY"]],
-    "default_download_action": "symlink",
+    "default_download_action": "move",
 })
 
 paths = obj("paths")
@@ -2060,6 +2060,13 @@ acl_add_file_ro() {
     acl_add_if_missing "$target" "user:$user:allow:r-----a-R-c--:---n" "file read"
 }
 
+acl_add_file_rw() {
+    target="$1"
+    user="$2"
+    dsm_user_exists "$user" || return 0
+    acl_add_if_missing "$target" "user:$user:allow:rwxpdDaARWc--:---n" "file read/write"
+}
+
 acl_add_rw() {
     target="$1"
     user="$2"
@@ -2087,6 +2094,16 @@ if [ -x "$ACLTOOL" ]; then
     if [ -n "$N8N_STACK_READER" ]; then
         acl_add_ro "$STACK_DIR" "$N8N_STACK_READER"
         acl_add_file_ro "$STACK_JSON" "$N8N_STACK_READER"
+        acl_add_file_rw "$WATCHLIST_STATE" "$N8N_STACK_READER"
+
+        # n8n only needs traversal on the media root, plus write access to the
+        # specific destinations/sources used by the import workflow.
+        acl_add_ro "$PLEX_LIBRARY_ROOT" "$N8N_STACK_READER"
+        acl_add_rw "$MOVIES_ROOT" "$N8N_STACK_READER"
+        acl_add_rw "$SERIES_ROOT" "$N8N_STACK_READER"
+        acl_add_rw "$QBIT_DOWNLOADS" "$N8N_STACK_READER"
+        acl_add_rw "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$N8N_STACK_READER"
+        acl_add_rw "$QBIT_DOWNLOADS/$SONARR_CATEGORY" "$N8N_STACK_READER"
     fi
 
     acl_add_ro "$PLEXROOT" "$PLEX_USER"
@@ -2718,4 +2735,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.7
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.8
