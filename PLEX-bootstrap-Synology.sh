@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.7.5
+# Version 8.7.6
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -39,7 +39,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.7.5"
+SCRIPT_VERSION="8.7.6"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -48,7 +48,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.5$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.6$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -2210,6 +2210,8 @@ if [ "$CONFIGURE_SERVICES" = "1" ]; then
 import copy
 import json
 import os
+import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -2495,7 +2497,46 @@ def bazarr_request(method, path, form=None):
         raise RuntimeError(f"{method} {url} -> HTTP {e.code}: {detail[:1000]}") from e
 
 
+def bazarr_settings_match(settings):
+    if not isinstance(settings, dict):
+        return False
+
+    general = settings.get("general") or {}
+    sonarr = settings.get("sonarr") or {}
+    radarr = settings.get("radarr") or {}
+
+    sonarr_port = int(urllib.parse.urlsplit(SONARR).port or 8989)
+    radarr_port = int(urllib.parse.urlsplit(RADARR).port or 7878)
+
+    def truthy(value):
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    return (
+        truthy(general.get("use_sonarr"))
+        and truthy(general.get("use_radarr"))
+        and str(sonarr.get("ip", "")).strip() == "127.0.0.1"
+        and int(sonarr.get("port") or 0) == sonarr_port
+        and str(sonarr.get("base_url") or "/").rstrip("/") in {"", "/"}
+        and not truthy(sonarr.get("ssl"))
+        and str(sonarr.get("apikey") or "").strip() == SONARR_KEY
+        and str(radarr.get("ip", "")).strip() == "127.0.0.1"
+        and int(radarr.get("port") or 0) == radarr_port
+        and str(radarr.get("base_url") or "/").rstrip("/") in {"", "/"}
+        and not truthy(radarr.get("ssl"))
+        and str(radarr.get("apikey") or "").strip() == RADARR_KEY
+    )
+
+
 def configure_bazarr():
+    # Reconcile mode must be idempotent. Saving the same Bazarr settings can
+    # restart its Sonarr/Radarr SignalR clients and unnecessarily delay the API.
+    current = bazarr_request("GET", "/api/system/settings")
+    if bazarr_settings_match(current):
+        print("[OK] Bazarr: Radarr and Sonarr integrations already configured")
+        return
+
     form = {
         "settings-general-use_sonarr": "true",
         "settings-sonarr-ip": "127.0.0.1",
@@ -2510,11 +2551,40 @@ def configure_bazarr():
         "settings-radarr-ssl": "false",
         "settings-radarr-apikey": RADARR_KEY,
     }
-    bazarr_request("POST", "/api/system/settings", form)
-    settings = bazarr_request("GET", "/api/system/settings")
-    if not isinstance(settings, dict):
-        raise RuntimeError("Bazarr settings API did not return JSON after configuration")
-    print("[OK] Bazarr: Radarr and Sonarr integrations configured")
+
+    post_timed_out = False
+    try:
+        bazarr_request("POST", "/api/system/settings", form)
+    except Exception as exc:
+        # Bazarr can save the settings and restart its SignalR integrations
+        # before the HTTP response is returned. Treat only a timeout as
+        # indeterminate and verify the actual persisted settings below.
+        timeout_like = (
+            isinstance(exc, (TimeoutError, socket.timeout))
+            or "timed out" in str(exc).lower()
+        )
+        if not timeout_like:
+            raise
+        post_timed_out = True
+        print("[WARN] Bazarr: settings POST timed out; verifying persisted settings")
+
+    last_error = None
+    for _ in range(30):
+        try:
+            settings = bazarr_request("GET", "/api/system/settings")
+            if bazarr_settings_match(settings):
+                if post_timed_out:
+                    print("[OK] Bazarr: settings were applied despite POST timeout")
+                else:
+                    print("[OK] Bazarr: Radarr and Sonarr integrations configured")
+                return
+        except Exception as exc:
+            last_error = exc
+        time.sleep(2)
+
+    if last_error:
+        raise RuntimeError(f"Bazarr settings could not be verified after update: {last_error}")
+    raise RuntimeError("Bazarr settings did not converge after update")
 
 
 for label, func in (
@@ -2644,4 +2714,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.5
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.6
