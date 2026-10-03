@@ -69,16 +69,16 @@ PLEX-bootstrap-Synology.md
 Main configuration file on a new default installation:
 
 ```text
-/volume1/PlexMediaServer/stack.json
+/volumeX/PlexMediaServer/stack.json
 ```
 
 Persistent Watchlist state:
 
 ```text
-/volume1/PlexMediaServer/watchlist-state.json
+/volumeX/PlexMediaServer/watchlist-state.json
 ```
 
-Existing deployments using custom paths such as `/volume1/VideoFactory/_Plex/stack.json` are not migrated automatically.
+Legacy/custom paths are no longer auto-selected. The default configuration root is the detected `/volumeX/PlexMediaServer`; explicit environment-variable overrides remain supported.
 
 Decypharr runtime configuration:
 
@@ -117,7 +117,7 @@ On a new installation, SynoPlex configuration/state and Decypharr default to the
             +-- qbittorrent/
 ```
 
-The bootstrap does not require `/volume1` specifically. It detects an existing `/volume*/PlexMediaServer` directory and uses it as the default state root for new installations. If an existing SynoPlex `stack.json` is found in the legacy `VideoFactory/_Plex` locations, those legacy paths remain the defaults on rerun. Explicit `STACK_JSON`, `WATCHLIST_STATE`, `DECYPHARR_ROOT`, and related variables always override automatic detection. Existing deployments are not migrated automatically.
+The bootstrap does not require `/volume1` specifically. It detects the existing Plex shared folder and uses that exact `/volumeX/PlexMediaServer` path as the default SynoPlex configuration/state root. Legacy `VideoFactory/_Plex` locations are not auto-selected anymore. Explicit `STACK_JSON`, `WATCHLIST_STATE`, `DECYPHARR_ROOT`, and related variables can still override the defaults when deliberately supplied.
 
 ## Default ports
 
@@ -186,20 +186,20 @@ New-install defaults on the reference volume are:
 
 ```text
 NAS address          : 192.168.0.4
-stack.json directory : /volume1/PlexMediaServer
-watchlist-state.json : /volume1/PlexMediaServer/watchlist-state.json
+stack.json directory : /volumeX/PlexMediaServer
+watchlist-state.json : /volumeX/PlexMediaServer/watchlist-state.json
 Plex data root       : /volume1/VideoFactory/_Plex
 Plex library root    : /volume1/VideoFactory/_Plex/media
 Movies               : /volume1/VideoFactory/_Plex/media/Movies
 Series               : /volume1/VideoFactory/_Plex/media/Series
-Decypharr root       : /volume1/PlexMediaServer/decypharr
-Decypharr mount      : /volume1/PlexMediaServer/decypharr/mount
-Decypharr downloads  : /volume1/PlexMediaServer/decypharr/downloads
+Decypharr root       : /volumeX/PlexMediaServer/decypharr
+Decypharr mount      : /volumeX/PlexMediaServer/decypharr/mount
+Decypharr downloads  : /volumeX/PlexMediaServer/decypharr/downloads
 Decypharr appdata    : /var/packages/decypharr/var
 qBittorrent downloads: /volume1/VideoFactory/_Plex/downloads/qbittorrent
 ```
 
-Existing installations keep their current locations. The bootstrap also auto-detects the previous `/volumeX/VideoFactory/_Plex[/_Config]/stack.json` layout and reuses it on rerun. It does not move an existing `stack.json`, Watchlist state file, or Decypharr tree.
+By default, reruns now target `/volumeX/PlexMediaServer` for SynoPlex configuration/state. Previous `/volumeX/VideoFactory/_Plex[/_Config]` layouts are not reused automatically. To keep a custom legacy path deliberately, provide `STACK_JSON` or the related path variables explicitly.
 
 On the reference installation, Radarr currently uses port `8310`, which is detected automatically from its existing configuration.
 
@@ -218,18 +218,19 @@ others       -> no direct access
 
 The file remains protected with Unix mode `0600` for its owner, while DSM ACL entries grant narrowly scoped access where required.
 
-The reference n8n host mounts the NAS share as:
+For the new layout, n8n should mount the Plex shared folder separately:
 
 ```text
-//192.168.0.4/VideoFactory -> /data/video-factory
-SMB account: videofactory / VideoFactory
+//NAS/PlexMediaServer -> /data/plex-media-server
 ```
 
-n8n therefore expects the configuration at:
+n8n therefore prefers the configuration at:
 
 ```text
-/data/video-factory/_Plex/stack.json
+/data/plex-media-server/stack.json
 ```
+
+The orchestrator keeps compatibility fallbacks for `/data/PlexMediaServer/stack.json` and the previous `/data/video-factory/_Plex/stack.json` path so an existing deployment can be migrated without an abrupt cutover.
 
 The bootstrap explicitly asks for the DSM account used by n8n to read `stack.json` and applies the required DSM ACL without granting write permission to that account.
 
@@ -238,16 +239,16 @@ The bootstrap explicitly asks for the DSM account used by n8n to read `stack.jso
 On the Synology NAS:
 
 ```bash
-ls -l /volume1/VideoFactory/_Plex/stack.json
+ls -l /volumeX/PlexMediaServer/stack.json
 /usr/syno/bin/synoacltool -get /volume1/VideoFactory/_Plex
-/usr/syno/bin/synoacltool -get /volume1/VideoFactory/_Plex/stack.json
+/usr/syno/bin/synoacltool -get /volumeX/PlexMediaServer/stack.json
 ```
 
 Test the owner:
 
 ```bash
 su -s /bin/sh -c \
-  'test -r /volume1/VideoFactory/_Plex/stack.json && echo READ_OK' \
+  'test -r /volumeX/PlexMediaServer/stack.json && echo READ_OK' \
   Floppy
 ```
 
@@ -255,7 +256,7 @@ Test the n8n SMB account:
 
 ```bash
 su -s /bin/sh -c \
-  'test -r /volume1/VideoFactory/_Plex/stack.json && echo N8N_READ_OK' \
+  'test -r /volumeX/PlexMediaServer/stack.json && echo N8N_READ_OK' \
   VideoFactory
 ```
 
@@ -319,11 +320,11 @@ The runtime configuration is generated from `stack.json` and synchronized again 
 
 Radarr and Sonarr are not injected into Decypharr's `arrs` list by the bootstrap. Decypharr discovers those instances natively from the qBittorrent-compatible download clients configured in Radarr and Sonarr. Legacy bootstrap-created `source=config` Radarr/Sonarr entries are removed while unrelated manual Arr entries are preserved.
 
-The expected API state is two auto-discovered instances:
+The expected API state is two canonical auto-discovered instances:
 
 ```text
-radarr      type=radarr  source=auto
-tv-sonarr   type=sonarr  source=auto
+radarr   type=radarr  source=auto
+sonarr   type=sonarr  source=auto
 ```
 
 The bootstrap also sets AllDebrid `download_uncached` to `true`, allowing Decypharr to submit valid uncached releases to AllDebrid while keeping Arr discovery native and duplicate-free.
@@ -594,7 +595,7 @@ or restart Decypharr.
 
 ```bash
 /bin/python3 -m json.tool \
-  /volume1/PlexMediaServer/stack.json >/dev/null \
+  /volumeX/PlexMediaServer/stack.json >/dev/null \
   && echo JSON_OK
 ```
 
@@ -617,4 +618,4 @@ For an existing/custom deployment, validate the configured `STACK_JSON` path ins
 
 ## Version
 
-This document corresponds to **PLEX Bootstrap Synology 8.2**.
+This document corresponds to **PLEX Bootstrap Synology 8.4**.
