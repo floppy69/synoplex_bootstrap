@@ -1854,6 +1854,7 @@ printf 'qBittorrent downloads: %s\n' "$QBIT_DOWNLOADS"
 printf 'Decypharr config    : %s\n' "$DECYPHARR_CONFIG"
 printf 'Source of truth     : %s\n' "$STACK_JSON"
 printf 'Watchlist state     : %s\n' "$WATCHLIST_STATE"
+printf 'n8n config mount    : //%s/PlexMediaServer -> /data/plex-media-server\n' "$NAS_IP"
 printf 'stack.json owner    : %s:%s (0600 + ACL)\n' "$STACK_OWNER" "$STACK_GROUP"
 printf 'n8n stack reader    : %s\n' "${N8N_STACK_READER:-none}"
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'Boot sync           : %s\n' "$DECYPHARR_BOOT_SYNC"; else printf 'Boot sync           : disabled\n'; fi
