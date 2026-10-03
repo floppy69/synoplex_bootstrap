@@ -225,7 +225,7 @@ done
 # SynoPlex configuration/state always defaults to the Plex shared folder on
 # the volume where it actually exists: /volumeX/PlexMediaServer.
 # Explicit environment variables may still override this for advanced/manual
-# deployments, but legacy VideoFactory paths are never auto-selected.
+# deployments; legacy custom paths are never auto-selected.
 DEFAULT_PLEX_SHARED_ROOT=""
 for candidate in /volume*/PlexMediaServer; do
     if [ -d "$candidate" ]; then
