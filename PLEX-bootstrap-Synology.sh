@@ -387,6 +387,8 @@ N8N_MEDIA_ROOT="$(trim_trailing_slash "$N8N_MEDIA_ROOT")"
 
 PLEX_DATA_ROOT="${PLEX_DATA_ROOT:-$(ask "Plex data root" "$DEFAULT_PLEX_DATA_ROOT")}" 
 PLEX_DATA_ROOT="$(trim_trailing_slash "$PLEX_DATA_ROOT")"
+MEDIA_ROOT="${MEDIA_ROOT:-$(ask "NAS media share/root corresponding to the n8n media mount" "$(dirname "$PLEX_DATA_ROOT")")}"
+MEDIA_ROOT="$(trim_trailing_slash "$MEDIA_ROOT")"
 PLEX_LIBRARY_ROOT="${PLEX_LIBRARY_ROOT:-$(ask "Plex library root" "$PLEX_DATA_ROOT/media")}" 
 PLEX_LIBRARY_ROOT="$(trim_trailing_slash "$PLEX_LIBRARY_ROOT")"
 MOVIES_ROOT="${MOVIES_ROOT:-$(ask "Movies library directory" "$PLEX_LIBRARY_ROOT/Movies")}" 
@@ -460,6 +462,7 @@ for path_item in \
     "$STACK_DIR|stack.json directory" \
     "$WATCHLIST_STATE|watchlist-state.json" \
     "$PLEX_DATA_ROOT|Plex root" \
+    "$MEDIA_ROOT|NAS media share/root" \
     "$PLEX_LIBRARY_ROOT|Plex library" \
     "$MOVIES_ROOT|Movies library" \
     "$SERIES_ROOT|Series library" \
@@ -539,6 +542,7 @@ printf 'stack.json owner     : %s:%s (0600 + ACL)\n' "$STACK_OWNER" "$STACK_GROU
 printf 'n8n stack reader     : %s\n' "${N8N_STACK_READER:-none}"
 printf 'n8n config root      : %s\n' "$N8N_CONFIG_ROOT"
 printf 'n8n media root       : %s\n' "$N8N_MEDIA_ROOT"
+printf 'NAS media root       : %s\n' "$MEDIA_ROOT"
 printf 'Plex data            : %s\n' "$PLEX_DATA_ROOT"
 printf 'Plex library         : %s\n' "$PLEX_LIBRARY_ROOT"
 printf 'Movies               : %s\n' "$MOVIES_ROOT"
@@ -573,7 +577,6 @@ chmod 775 "$QBIT_DOWNLOADS" "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$QBIT_DOWNLOADS/
 log "Media directory tree created/verified"
 
 PLEXROOT="$PLEX_DATA_ROOT"
-MEDIA_ROOT="$PLEX_DATA_ROOT"
 LEGACY_DOWNLOADS="$PLEX_DATA_ROOT/downloads"
 mkdir -p "$LEGACY_DOWNLOADS/radarr" "$LEGACY_DOWNLOADS/sonarr"
 
