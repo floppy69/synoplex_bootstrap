@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.7.6
+# Version 8.7.7
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -39,7 +39,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.7.6"
+SCRIPT_VERSION="8.7.7"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -48,7 +48,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.6$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.7$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -558,7 +558,11 @@ DECYPHARR_MOUNT="$(trim_trailing_slash "$DECYPHARR_MOUNT")"
 DECYPHARR_DOWNLOADS="$(trim_trailing_slash "$DECYPHARR_DOWNLOADS")"
 QBIT_DOWNLOADS="$(trim_trailing_slash "$QBIT_DOWNLOADS")"
 
-DECYPHARR_APPDATA="${DECYPHARR_APPDATA:-$(ask "Decypharr package internal data" "/var/packages/decypharr/var")}" 
+if [ "$STACK_REUSE" = "1" ]; then
+    DECYPHARR_APPDATA="${DECYPHARR_APPDATA:-/var/packages/decypharr/var}"
+else
+    DECYPHARR_APPDATA="${DECYPHARR_APPDATA:-$(ask "Decypharr package internal data" "/var/packages/decypharr/var")}"
+fi
 DECYPHARR_APPDATA="$(trim_trailing_slash "$DECYPHARR_APPDATA")"
 DECYPHARR_CONFIG_DIR="$DECYPHARR_APPDATA/data"
 DECYPHARR_CONFIG="$DECYPHARR_CONFIG_DIR/config.json"
@@ -2714,4 +2718,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.6
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.7
