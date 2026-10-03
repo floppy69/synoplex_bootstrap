@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.7.4
+# Version 8.7.5
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -39,7 +39,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.7.4"
+SCRIPT_VERSION="8.7.5"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -48,7 +48,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.4$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.5$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -2016,53 +2016,51 @@ pkg_user() {
     printf '%s' "$fallback"
 }
 
-acl_remove_user_entries() {
+dsm_user_exists() {
+    user="$1"
+    [ -n "$user" ] || return 1
+    id "$user" >/dev/null 2>&1 && return 0
+    [ -x /usr/syno/sbin/synouser ] && /usr/syno/sbin/synouser --get "$user" >/dev/null 2>&1 && return 0
+    return 1
+}
+
+acl_add_if_missing() {
     target="$1"
-    user="$2"
+    ace="$2"
+    label="$3"
+
     [ -x "$ACLTOOL" ] || return 0
     [ -e "$target" ] || return 0
 
-    indexes="$(
-        "$ACLTOOL" -get "$target" 2>/dev/null |
-        awk -v needle="user:$user:" '
-            index($0, needle) {
-                gsub(/\[/, "", $1)
-                gsub(/\]/, "", $1)
-                print $1
-            }
-        ' | sort -rn
-    )"
-    for idx in $indexes; do
-        "$ACLTOOL" -del "$target" "$idx" >/dev/null 2>&1 || true
-    done
+    # SynoPlex ACL handling is strictly additive: never delete, replace,
+    # reorder or normalize pre-existing DSM ACL entries.
+    if "$ACLTOOL" -get "$target" 2>/dev/null | grep -F -- "$ace" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    "$ACLTOOL" -add "$target" "$ace" >/dev/null 2>&1 || \
+        warn "Unable to add $label ACL: $ace -> $target"
 }
 
-acl_set_ro() {
+acl_add_ro() {
     target="$1"
     user="$2"
-    id "$user" >/dev/null 2>&1 || return 0
-    acl_remove_user_entries "$target" "$user"
-    "$ACLTOOL" -add "$target" "user:$user:allow:r-x---a-R-c--:fd--" >/dev/null 2>&1 || \
-        warn "Unable to apply read-only ACL: $user -> $target"
+    dsm_user_exists "$user" || return 0
+    acl_add_if_missing "$target" "user:$user:allow:r-x---a-R-c--:fd--" "read-only"
 }
 
-acl_set_file_ro() {
+acl_add_file_ro() {
     target="$1"
     user="$2"
-    [ -n "$user" ] || return 0
-    id "$user" >/dev/null 2>&1 || return 0
-    acl_remove_user_entries "$target" "$user"
-    "$ACLTOOL" -add "$target" "user:$user:allow:r-----a-R-c--:---n" >/dev/null 2>&1 || \
-        warn "Unable to apply file read ACL: $user -> $target"
+    dsm_user_exists "$user" || return 0
+    acl_add_if_missing "$target" "user:$user:allow:r-----a-R-c--:---n" "file read"
 }
 
-acl_set_rw() {
+acl_add_rw() {
     target="$1"
     user="$2"
-    id "$user" >/dev/null 2>&1 || return 0
-    acl_remove_user_entries "$target" "$user"
-    "$ACLTOOL" -add "$target" "user:$user:allow:rwxpdDaARWc--:fd--" >/dev/null 2>&1 || \
-        warn "Unable to apply read/write ACL: $user -> $target"
+    dsm_user_exists "$user" || return 0
+    acl_add_if_missing "$target" "user:$user:allow:rwxpdDaARWc--:fd--" "read/write"
 }
 
 if [ -x "$ACLTOOL" ]; then
@@ -2078,72 +2076,72 @@ if [ -x "$ACLTOOL" ]; then
     # Adding service ACLs to a DSM directory can break inheritance
     # from the parent, so explicitly reapply the selected stack.json
     # owner's permissions on its directory.
-    acl_set_rw "$STACK_DIR" "$STACK_OWNER"
+    acl_add_rw "$STACK_DIR" "$STACK_OWNER"
 
     # Grant the configured n8n SMB account access to the selected state directory
     # and read-only access to stack.json without exposing secrets to everyone.
     if [ -n "$N8N_STACK_READER" ]; then
-        acl_set_ro "$STACK_DIR" "$N8N_STACK_READER"
-        acl_set_file_ro "$STACK_JSON" "$N8N_STACK_READER"
+        acl_add_ro "$STACK_DIR" "$N8N_STACK_READER"
+        acl_add_file_ro "$STACK_JSON" "$N8N_STACK_READER"
     fi
 
-    acl_set_ro "$PLEXROOT" "$PLEX_USER"
-    acl_set_ro "$PLEX_LIBRARY_ROOT" "$PLEX_USER"
-    acl_set_ro "$MOVIES_ROOT" "$PLEX_USER"
-    acl_set_ro "$SERIES_ROOT" "$PLEX_USER"
-    acl_set_ro "$DECYPHARR_ROOT" "$PLEX_USER"
-    acl_set_ro "$DECYPHARR_MOUNT" "$PLEX_USER"
+    acl_add_ro "$PLEXROOT" "$PLEX_USER"
+    acl_add_ro "$PLEX_LIBRARY_ROOT" "$PLEX_USER"
+    acl_add_ro "$MOVIES_ROOT" "$PLEX_USER"
+    acl_add_ro "$SERIES_ROOT" "$PLEX_USER"
+    acl_add_ro "$DECYPHARR_ROOT" "$PLEX_USER"
+    acl_add_ro "$DECYPHARR_MOUNT" "$PLEX_USER"
 
-    acl_set_ro "$PLEXROOT" "$RADARR_USER"
-    acl_set_rw "$MOVIES_ROOT" "$RADARR_USER"
+    acl_add_ro "$PLEXROOT" "$RADARR_USER"
+    acl_add_rw "$MOVIES_ROOT" "$RADARR_USER"
     # Radarr must be able to traverse PlexMediaServer/decypharr and read/write
     # its own Decypharr category. Existing category directories may predate
     # inherited ACLs, so apply permissions explicitly.
-    acl_set_ro "$STACK_DIR" "$RADARR_USER"
-    acl_set_ro "$DECYPHARR_ROOT" "$RADARR_USER"
-    acl_set_rw "$DECYPHARR_DOWNLOADS" "$RADARR_USER"
-    acl_set_rw "$DECYPHARR_DOWNLOADS/$RADARR_CATEGORY" "$RADARR_USER"
-    acl_set_ro "$DECYPHARR_MOUNT" "$RADARR_USER"
+    acl_add_ro "$STACK_DIR" "$RADARR_USER"
+    acl_add_ro "$DECYPHARR_ROOT" "$RADARR_USER"
+    acl_add_rw "$DECYPHARR_DOWNLOADS" "$RADARR_USER"
+    acl_add_rw "$DECYPHARR_DOWNLOADS/$RADARR_CATEGORY" "$RADARR_USER"
+    acl_add_ro "$DECYPHARR_MOUNT" "$RADARR_USER"
 
-    acl_set_ro "$PLEXROOT" "$SONARR_USER"
-    acl_set_rw "$SERIES_ROOT" "$SONARR_USER"
+    acl_add_ro "$PLEXROOT" "$SONARR_USER"
+    acl_add_rw "$SERIES_ROOT" "$SONARR_USER"
     # Same rule for Sonarr and its own category directory.
-    acl_set_ro "$STACK_DIR" "$SONARR_USER"
-    acl_set_ro "$DECYPHARR_ROOT" "$SONARR_USER"
-    acl_set_rw "$DECYPHARR_DOWNLOADS" "$SONARR_USER"
-    acl_set_rw "$DECYPHARR_DOWNLOADS/$SONARR_CATEGORY" "$SONARR_USER"
-    acl_set_ro "$DECYPHARR_MOUNT" "$SONARR_USER"
+    acl_add_ro "$STACK_DIR" "$SONARR_USER"
+    acl_add_ro "$DECYPHARR_ROOT" "$SONARR_USER"
+    acl_add_rw "$DECYPHARR_DOWNLOADS" "$SONARR_USER"
+    acl_add_rw "$DECYPHARR_DOWNLOADS/$SONARR_CATEGORY" "$SONARR_USER"
+    acl_add_ro "$DECYPHARR_MOUNT" "$SONARR_USER"
 
     # qBittorrent is kept as a fallback/manual download client.
     # qBittorrent needs write access to its download tree, while Radarr and
     # Sonarr must be able to read/write their own category directories so
     # completed-download handling/imports can succeed.
-    acl_set_ro "$PLEXROOT" "$QBIT_USER"
-    acl_set_rw "$QBIT_DOWNLOADS" "$QBIT_USER"
-    acl_set_rw "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$QBIT_USER"
-    acl_set_rw "$QBIT_DOWNLOADS/$SONARR_CATEGORY" "$QBIT_USER"
+    acl_add_ro "$PLEXROOT" "$QBIT_USER"
+    acl_add_rw "$QBIT_DOWNLOADS" "$QBIT_USER"
+    acl_add_rw "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$QBIT_USER"
+    acl_add_rw "$QBIT_DOWNLOADS/$SONARR_CATEGORY" "$QBIT_USER"
 
-    acl_set_ro "$QBIT_DOWNLOADS" "$RADARR_USER"
-    acl_set_rw "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$RADARR_USER"
+    acl_add_ro "$QBIT_DOWNLOADS" "$RADARR_USER"
+    acl_add_rw "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$RADARR_USER"
 
-    acl_set_ro "$QBIT_DOWNLOADS" "$SONARR_USER"
-    acl_set_rw "$QBIT_DOWNLOADS/$SONARR_CATEGORY" "$SONARR_USER"
+    acl_add_ro "$QBIT_DOWNLOADS" "$SONARR_USER"
+    acl_add_rw "$QBIT_DOWNLOADS/$SONARR_CATEGORY" "$SONARR_USER"
 
     # Bazarr must be able to write subtitles next to media files.
-    acl_set_ro "$PLEXROOT" "$BAZARR_USER"
-    acl_set_rw "$PLEX_LIBRARY_ROOT" "$BAZARR_USER"
-    acl_set_rw "$MOVIES_ROOT" "$BAZARR_USER"
-    acl_set_rw "$SERIES_ROOT" "$BAZARR_USER"
+    acl_add_ro "$PLEXROOT" "$BAZARR_USER"
+    acl_add_rw "$PLEX_LIBRARY_ROOT" "$BAZARR_USER"
+    acl_add_rw "$MOVIES_ROOT" "$BAZARR_USER"
+    acl_add_rw "$SERIES_ROOT" "$BAZARR_USER"
 
     # Decypharr itself must be able to traverse the PlexMediaServer shared
     # folder before it can reach its own data/mount directories. Without this
     # DSM can return Permission denied even when sc-decypharr owns the child.
-    acl_set_ro "$STACK_DIR" "$DECYPHARR_USER"
-    acl_set_rw "$DECYPHARR_ROOT" "$DECYPHARR_USER"
-    acl_set_rw "$DECYPHARR_MOUNT" "$DECYPHARR_USER"
-    acl_set_rw "$DECYPHARR_DOWNLOADS" "$DECYPHARR_USER"
-    acl_set_rw "$DECYPHARR_DOWNLOADS/$RADARR_CATEGORY" "$DECYPHARR_USER"
-    acl_set_rw "$DECYPHARR_DOWNLOADS/$SONARR_CATEGORY" "$DECYPHARR_USER"
+    acl_add_ro "$STACK_DIR" "$DECYPHARR_USER"
+    acl_add_rw "$DECYPHARR_ROOT" "$DECYPHARR_USER"
+    acl_add_rw "$DECYPHARR_MOUNT" "$DECYPHARR_USER"
+    acl_add_rw "$DECYPHARR_DOWNLOADS" "$DECYPHARR_USER"
+    acl_add_rw "$DECYPHARR_DOWNLOADS/$RADARR_CATEGORY" "$DECYPHARR_USER"
+    acl_add_rw "$DECYPHARR_DOWNLOADS/$SONARR_CATEGORY" "$DECYPHARR_USER"
 
     log "DSM ACLs applied (stack.json: admin=$STACK_OWNER, n8n=${N8N_STACK_READER:-none})"
 else
@@ -2646,4 +2644,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.4
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.7.5
