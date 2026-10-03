@@ -20,7 +20,6 @@
 #   STACK_JSON=/volumeX/PlexMediaServer/stack.json
 #   WATCHLIST_STATE=/volumeX/PlexMediaServer/watchlist-state.json
 #   PLEX_DATA_ROOT=/volumeX/Media/Plex
-#   PLEX_DATA_ROOT=/volumeX/Media/Plex
 #   Movies and Series are always created directly below PLEX_DATA_ROOT
 #   DECYPHARR_ROOT=/volumeX/PlexMediaServer/decypharr
 #   DECYPHARR_MOUNT=/volumeX/PlexMediaServer/decypharr/mount
@@ -472,8 +471,29 @@ STACK_OWNER="$STACK_OWNER_RESOLVED"
 STACK_GROUP="$(id -gn "$STACK_OWNER" 2>/dev/null || true)"
 [ -n "$STACK_GROUP" ] || STACK_GROUP="users"
 
+detect_stack_reader_acl() {
+    [ -x "$ACLTOOL" ] || return 0
+    [ -f "$STACK_JSON" ] || return 0
+
+    readers="$(
+        "$ACLTOOL" -get "$STACK_JSON" 2>/dev/null |
+        sed -n 's/.*user:\([^:][^:]*\):.*/\1/p' |
+        awk -v owner="$STACK_OWNER" '$0 != owner' |
+        sort -u
+    )"
+
+    count="$(printf '%s\n' "$readers" | sed '/^$/d' | wc -l | tr -d ' ')"
+    if [ "$count" = "1" ]; then
+        printf '%s\n' "$readers" | sed '/^$/d' | head -n 1
+    fi
+}
+
 if [ "$STACK_REUSE" = "1" ]; then
     N8N_STACK_READER="${N8N_STACK_READER:-$(stack_value access.n8n_stack_reader)}"
+    if [ -z "$N8N_STACK_READER" ]; then
+        N8N_STACK_READER="$(detect_stack_reader_acl)"
+        [ -n "$N8N_STACK_READER" ] && log "Reusing n8n stack reader from DSM ACL: $N8N_STACK_READER"
+    fi
     if [ -n "$N8N_STACK_READER" ]; then
         N8N_STACK_READER_RESOLVED="$(resolve_dsm_user "$N8N_STACK_READER" || true)"
         [ -n "$N8N_STACK_READER_RESOLVED" ] && N8N_STACK_READER="$N8N_STACK_READER_RESOLVED"
