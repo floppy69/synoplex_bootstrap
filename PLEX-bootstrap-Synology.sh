@@ -2435,7 +2435,10 @@ def upsert_download_client(arr_name, base, key, schema, client_name, priority,
     client["name"] = client_name
     client["enable"] = True
     client["priority"] = priority
-    client["removeCompletedDownloads"] = True
+    # Decypharr entries may be removed after Arr imports them. Real qBittorrent
+    # must retain completed torrents because C411 releases have a permanent
+    # seeding requirement managed by the n8n orchestrator.
+    client["removeCompletedDownloads"] = (client_name.lower() == "decypharr")
     client["removeFailedDownloads"] = False
     client["tags"] = []
 
