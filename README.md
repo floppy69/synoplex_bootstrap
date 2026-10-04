@@ -50,7 +50,7 @@ The target stack contains:
 
 Radarr and Sonarr keep **both** Decypharr and qBittorrent configured. n8n explicitly selects the client for each grab through the `downloadClientId` supported by the Radarr and Sonarr APIs.
 
-The preferred route is Decypharr. qBittorrent is used as fallback when Decypharr explicitly refuses a grab. A timeout or ambiguous network failure must **not** trigger an automatic fallback, because the first request may already have been accepted and blindly retrying through qBittorrent could create a duplicate download.
+The preferred route is Decypharr. qBittorrent is used as fallback when Decypharr explicitly refuses a grab. **C411 is the exception:** releases coming from the C411 indexer are routed directly to qBittorrent so they can remain available to the BitTorrent swarm after import. A timeout or ambiguous network failure must **not** trigger an automatic fallback, because the first request may already have been accepted and blindly retrying through qBittorrent could create a duplicate download.
 
 ## Release policy
 
@@ -64,6 +64,7 @@ SynoPlex reconciles the release policy across n8n, Prowlarr, Radarr, and Sonarr 
 - VFQ / French Canadian releases are explicitly rejected.
 - Existing movies and series are reconciled back to their strict profile on bootstrap reruns.
 - Prowlarr stores the application minimum-seeder policy and Radarr/Sonarr receive the same threshold. Individual unreachable indexers are reported as warnings rather than making the entire bootstrap fail.
+- C411 releases are routed to qBittorrent instead of Decypharr. After import they are tagged `seed-c411` and are never removed by the normal seeder-threshold cleanup or Watchlist cleanup. Radarr and Sonarr therefore keep `removeCompletedDownloads=false` on the real qBittorrent client, while Decypharr keeps automatic completed-download cleanup enabled.
 
 Decypharr uses its native `symlink` post-download action for debrid content. This does not mean that a second full local payload is copied into the Decypharr download directory: Decypharr exposes the mounted debrid file to the Arr application, which then imports it into the media library. Decypharr does not implement a native `move` download action.
 
