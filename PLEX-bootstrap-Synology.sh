@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.8.0
+# Version 8.8.1
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -39,7 +39,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.8.0"
+SCRIPT_VERSION="8.8.1"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -48,7 +48,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.8.0$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.8.1$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -2088,6 +2088,20 @@ acl_add_rw() {
     acl_add_if_missing "$target" "user:$user:allow:rwxpdDaARWc--:fd--" "read/write"
 }
 
+acl_add_rw_tree_dirs() {
+    root="$1"
+    user="$2"
+    [ -d "$root" ] || return 0
+    dsm_user_exists "$user" || return 0
+
+    # Strictly additive repair for existing Decypharr-created directories.
+    # Directory write/delete permission is what Arr needs to move/remove
+    # symlinks during completed-download import.
+    find "$root" -type d -print 2>/dev/null | while IFS= read -r dir; do
+        acl_add_rw "$dir" "$user"
+    done
+}
+
 if [ -x "$ACLTOOL" ]; then
     PLEX_USER="PlexMediaServer"
     RADARR_USER="$(pkg_user radarr)"
@@ -2136,6 +2150,7 @@ if [ -x "$ACLTOOL" ]; then
     acl_add_ro "$DECYPHARR_ROOT" "$RADARR_USER"
     acl_add_rw "$DECYPHARR_DOWNLOADS" "$RADARR_USER"
     acl_add_rw "$DECYPHARR_DOWNLOADS/$RADARR_CATEGORY" "$RADARR_USER"
+    acl_add_rw_tree_dirs "$DECYPHARR_DOWNLOADS/$RADARR_CATEGORY" "$RADARR_USER"
     acl_add_ro "$DECYPHARR_MOUNT" "$RADARR_USER"
 
     acl_add_ro "$PLEXROOT" "$SONARR_USER"
@@ -2145,6 +2160,7 @@ if [ -x "$ACLTOOL" ]; then
     acl_add_ro "$DECYPHARR_ROOT" "$SONARR_USER"
     acl_add_rw "$DECYPHARR_DOWNLOADS" "$SONARR_USER"
     acl_add_rw "$DECYPHARR_DOWNLOADS/$SONARR_CATEGORY" "$SONARR_USER"
+    acl_add_rw_tree_dirs "$DECYPHARR_DOWNLOADS/$SONARR_CATEGORY" "$SONARR_USER"
     acl_add_ro "$DECYPHARR_MOUNT" "$SONARR_USER"
 
     # qBittorrent is kept as a fallback/manual download client.
@@ -2948,4 +2964,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.8.0
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.8.1
