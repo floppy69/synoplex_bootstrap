@@ -2727,6 +2727,85 @@ def upsert_prowlarr_app(name, arr_url, arr_key):
         print(f"[OK] Prowlarr: created {name} application")
 
 
+def ensure_c411_sync_policy():
+    profile_name = "C411 - n8n only"
+    profiles = api(PROWLARR, PROWLARR_KEY, "GET", "/api/v1/appprofile") or []
+    profile = next(
+        (x for x in profiles if str(x.get("name", "")).lower() == profile_name.lower()),
+        None,
+    )
+
+    if profile is None:
+        if not profiles:
+            raise RuntimeError("Prowlarr has no application sync profile to clone for C411")
+        profile = copy.deepcopy(profiles[0])
+        profile.pop("id", None)
+        profile["name"] = profile_name
+        profile["enableRss"] = False
+        profile["enableAutomaticSearch"] = False
+        profile["enableInteractiveSearch"] = True
+        profile["minimumSeeders"] = MIN_SEEDERS
+        profile = api(PROWLARR, PROWLARR_KEY, "POST", "/api/v1/appprofile", profile)
+        print(f"[OK] Prowlarr: created dedicated C411 sync profile {profile_name}")
+    else:
+        wanted = {
+            "enableRss": False,
+            "enableAutomaticSearch": False,
+            "enableInteractiveSearch": True,
+            "minimumSeeders": MIN_SEEDERS,
+        }
+        changed = any(profile.get(k) != v for k, v in wanted.items())
+        if changed:
+            updated = copy.deepcopy(profile)
+            updated.update(wanted)
+            profile = api(
+                PROWLARR,
+                PROWLARR_KEY,
+                "PUT",
+                f"/api/v1/appprofile/{profile['id']}",
+                updated,
+            )
+            print(f"[OK] Prowlarr: updated dedicated C411 sync profile {profile_name}")
+
+    indexers = api(PROWLARR, PROWLARR_KEY, "GET", "/api/v1/indexer") or []
+    c411 = next(
+        (
+            x for x in indexers
+            if str(x.get("name", "")).strip().lower() == "c411"
+            or str(next(
+                (
+                    f.get("value", "")
+                    for f in x.get("fields", [])
+                    if f.get("name") == "definitionFile"
+                ),
+                "",
+            )).strip().lower() == "c411"
+        ),
+        None,
+    )
+
+    if c411 is None:
+        print("[WARN] Prowlarr: C411 indexer not found; dedicated sync policy not assigned")
+        return
+
+    if int(c411.get("appProfileId") or 0) != int(profile["id"]):
+        updated = copy.deepcopy(c411)
+        updated["appProfileId"] = int(profile["id"])
+        api(
+            PROWLARR,
+            PROWLARR_KEY,
+            "PUT",
+            f"/api/v1/indexer/{c411['id']}",
+            updated,
+        )
+        print(f"[OK] Prowlarr: assigned {profile_name} to C411")
+
+    print(
+        "[OK] C411 policy: RSS=off automatic=off interactive=on "
+        f"minimumSeeders={MIN_SEEDERS}"
+    )
+
+
 def bazarr_request(method, path, form=None):
     url = BAZARR + path
     body = None
@@ -2845,6 +2924,7 @@ for label, func in (
     ("Sonarr", lambda: configure_arr("Sonarr", SONARR, SONARR_KEY, SONARR_ROOT, SONARR_CATEGORY)),
     ("Prowlarr/Radarr", lambda: upsert_prowlarr_app("Radarr", RADARR, RADARR_KEY)),
     ("Prowlarr/Sonarr", lambda: upsert_prowlarr_app("Sonarr", SONARR, SONARR_KEY)),
+    ("C411 routing policy", ensure_c411_sync_policy),
     ("Release policy", configure_release_policy),
     ("Bazarr", configure_bazarr),
 ):
