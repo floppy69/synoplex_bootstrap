@@ -1121,6 +1121,12 @@ if ! is_installed decypharr; then
     exit 1
 fi
 
+if [ "$UPGRADE_DECYPHARR" = "1" ] && ! decypharr_target_met; then
+    err "Decypharr upgrade target was not reached."
+    err "Installed: $(decypharr_installed_version); required: >= $DECYPHARR_TARGET_VERSION"
+    exit 1
+fi
+
 # The DSM package has now created its @appdata. Only the required directories are completed here.
 mkdir -p "$DECYPHARR_CONFIG_DIR" "$DECYPHARR_CACHE_DIR"
 
