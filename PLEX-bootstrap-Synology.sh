@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # PLEX-bootstrap-Synology.sh
-# Version 8.2
+# Version 8.3
 # Interactive bootstrap for Synology DSM 7.x
 # Plex + Radarr + Sonarr + Prowlarr + Decypharr + qBittorrent + Bazarr
 #
@@ -30,6 +30,7 @@
 #   RADARR_PORT=7878 SONARR_PORT=8989 PLEX_PORT=32400 DECYPHARR_PORT=8282
 #   RADARR_CATEGORY=radarr SONARR_CATEGORY=sonarr
 #   INSTALL_PLEX=1 INSTALL_RADARR=1 INSTALL_SONARR=1 INSTALL_DECYPHARR=1
+#   UPGRADE_DECYPHARR=1 DECYPHARR_TARGET_VERSION=2.7
 #   CONFIGURE_ARRS=1 INSTALL_BOOT_SYNC=1
 #   DECYPHARR_SPK=/path/to/decypharr-....spk
 #   ALLDEBRID_API_KEY=...   # only if stack.json does not exist or does not contain the key yet
@@ -37,7 +38,7 @@
 
 set -u
 
-SCRIPT_VERSION="8.2"
+SCRIPT_VERSION="8.3"
 printf '\n[BOOT] PLEX Bootstrap Synology - v%s\n' "$SCRIPT_VERSION"
 printf '[BOOT] Shell : %s\n' "${SHELL:-/bin/sh}"
 printf '[BOOT] PID   : %s\n\n' "$$"
@@ -46,7 +47,7 @@ printf '[BOOT] PID   : %s\n\n' "$$"
 # DSM executes shell scripts progressively, so this check provides
 # a readable error when a manual copy truncated the file.
 if [ -f "$0" ]; then
-    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.2$'; then
+    if ! tail -n 5 "$0" 2>/dev/null | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.3$'; then
         printf '[ERROR] The script is incomplete or truncated: %s\n' "$0" >&2
         printf '[ERROR] Do not copy it in chunks through vi/cat/heredoc.\n' >&2
         printf '[ERROR] Verify it with: wc -l "%s"\n' "$0" >&2
@@ -434,6 +435,8 @@ INSTALL_PROWLARR="${INSTALL_PROWLARR:-$(ask_yes_no "Install Prowlarr if missing"
 INSTALL_QBIT="${INSTALL_QBIT:-$(ask_yes_no "Install qBittorrent if missing" "1")}" 
 INSTALL_BAZARR="${INSTALL_BAZARR:-$(ask_yes_no "Install Bazarr if missing" "1")}" 
 INSTALL_DECYPHARR="${INSTALL_DECYPHARR:-$(ask_yes_no "Install Decypharr if missing" "1")}" 
+UPGRADE_DECYPHARR="${UPGRADE_DECYPHARR:-$(ask_yes_no "Upgrade Decypharr when older than 2.7" "1")}"
+DECYPHARR_TARGET_VERSION="${DECYPHARR_TARGET_VERSION:-2.7}"
 CONFIGURE_ARRS="${CONFIGURE_ARRS:-$(ask_yes_no "Automatically configure Radarr/Sonarr to use Decypharr" "1")}" 
 INSTALL_BOOT_SYNC="${INSTALL_BOOT_SYNC:-$(ask_yes_no "Resynchronize Decypharr from stack.json at every DSM boot" "1")}" 
 
@@ -930,49 +933,125 @@ fi
 # Native DSM Decypharr installation
 # ---------------------------------------------------------------------------
 
+
 install_local_decypharr_spk() {
     spk="$1"
     [ -f "$spk" ] || return 1
-    info "Installing Decypharr from: $spk"
-    synopkg install "$spk" >"$TMPBASE/install-decypharr.log" 2>&1 || true
-    is_installed decypharr
+
+    before_version="$(decypharr_installed_version)"
+    if [ -n "$before_version" ]; then
+        info "Upgrading Decypharr from $before_version using: $spk"
+    else
+        info "Installing Decypharr from: $spk"
+    fi
+
+    if ! synopkg install "$spk" >"$TMPBASE/install-decypharr.log" 2>&1; then
+        warn "Decypharr package installation/upgrade failed."
+        tail -50 "$TMPBASE/install-decypharr.log" 2>/dev/null || true
+        return 1
+    fi
+
+    is_installed decypharr || return 1
+    after_version="$(decypharr_installed_version)"
+    [ -n "$after_version" ] && log "Decypharr package version: $after_version"
+    return 0
+}
+
+decypharr_installed_version() {
+    info_file="/var/packages/decypharr/INFO"
+    if [ -r "$info_file" ]; then
+        sed -n 's/^version="\([^"]*\)".*/\1/p' "$info_file" | head -1
+    fi
+}
+
+version_at_least() {
+    current="$1"
+    required="$2"
+    "$PYTHON" - "$current" "$required" <<'PYVERSION'
+import re
+import sys
+
+def parts(value):
+    nums = [int(x) for x in re.findall(r"\d+", value)]
+    return tuple((nums + [0, 0, 0, 0])[:4])
+
+raise SystemExit(0 if parts(sys.argv[1]) >= parts(sys.argv[2]) else 1)
+PYVERSION
+}
+
+decypharr_target_met() {
+    is_installed decypharr || return 1
+    installed_version="$(decypharr_installed_version)"
+    [ -n "$installed_version" ] || return 1
+    version_at_least "$installed_version" "$DECYPHARR_TARGET_VERSION"
+}
+
+spk_meets_target() {
+    candidate="$1"
+    name="$(basename "$candidate")"
+    candidate_version="$(printf '%s\n' "$name" | sed -n 's/^decypharr-\([0-9][0-9.]*\)-.*$/\1/p')"
+    [ -n "$candidate_version" ] || return 1
+    version_at_least "$candidate_version" "$DECYPHARR_TARGET_VERSION"
 }
 
 install_decypharr() {
-    if is_installed decypharr; then
-        log "Decypharr already installed"
+    if decypharr_target_met; then
+        log "Decypharr $(decypharr_installed_version) already meets target >= $DECYPHARR_TARGET_VERSION"
         return 0
     fi
 
-    [ "$INSTALL_DECYPHARR" = "1" ] || return 1
-
-    if [ -n "${DECYPHARR_SPK:-}" ]; then
-        if install_local_decypharr_spk "$DECYPHARR_SPK"; then
-            log "Decypharr installed from DECYPHARR_SPK"
+    if is_installed decypharr; then
+        installed_version="$(decypharr_installed_version)"
+        [ -n "$installed_version" ] || installed_version="unknown"
+        if [ "$UPGRADE_DECYPHARR" != "1" ]; then
+            warn "Decypharr $installed_version is installed; automatic upgrade is disabled."
             return 0
         fi
+        info "Decypharr $installed_version is older than target $DECYPHARR_TARGET_VERSION; upgrade required."
+    else
+        [ "$INSTALL_DECYPHARR" = "1" ] || return 1
     fi
 
-    # First look for an SPK already present on the NAS.
+    if [ -n "$DECYPHARR_SPK" ]; then
+        if install_local_decypharr_spk "$DECYPHARR_SPK" && decypharr_target_met; then
+            log "Decypharr target reached from DECYPHARR_SPK"
+            return 0
+        fi
+        warn "Explicit DECYPHARR_SPK did not provide Decypharr >= $DECYPHARR_TARGET_VERSION"
+    fi
+
     for candidate in \
-        "$PLEXROOT"/decypharr-*-dsm${DSM_MAJOR}.${DSM_MINOR}-${ARCH}.spk \
-        "$STACK_DIR"/decypharr-*-dsm${DSM_MAJOR}.${DSM_MINOR}-${ARCH}.spk \
-        /volume*/decypharr-*-dsm${DSM_MAJOR}.${DSM_MINOR}-${ARCH}.spk
+        "$PLEXROOT"/decypharr-*-dsm$DSM_MAJOR.$DSM_MINOR-$ARCH.spk \
+        "$STACK_DIR"/decypharr-*-dsm$DSM_MAJOR.$DSM_MINOR-$ARCH.spk \
+        /volume*/decypharr-*-dsm$DSM_MAJOR.$DSM_MINOR-$ARCH.spk
     do
         [ -f "$candidate" ] || continue
-        if install_local_decypharr_spk "$candidate"; then
-            log "Decypharr installed from the local SPK"
+        spk_meets_target "$candidate" || continue
+        if install_local_decypharr_spk "$candidate" && decypharr_target_met; then
+            log "Decypharr target reached from local SPK"
             return 0
         fi
     done
 
-    # Otherwise, try the latest GitHub release from the ESI69190/decypharr fork.
     release_json="$TMPBASE/decypharr-release.json"
     if curl -fsSL --connect-timeout 15 --max-time 60 \
         "https://api.github.com/repos/ESI69190/decypharr/releases/latest" \
         -o "$release_json"; then
 
-        asset_url="$($PYTHON - "$release_json" "$ARCH" "$DSM_MAJOR.$DSM_MINOR" <<'PY'
+        release_version="$("$PYTHON" - "$release_json" <<'PYRELVER'
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    data = json.load(f)
+print(str(data.get("tag_name") or "").lstrip("v"))
+PYRELVER
+)"
+
+        if [ -z "$release_version" ] || ! version_at_least "$release_version" "$DECYPHARR_TARGET_VERSION"; then
+            warn "Latest native Decypharr release is $release_version; target is >= $DECYPHARR_TARGET_VERSION"
+            return 1
+        fi
+
+        asset_url="$("$PYTHON" - "$release_json" "$ARCH" "$DSM_MAJOR.$DSM_MINOR" <<'PY'
 import json, sys
 p, arch, dsm = sys.argv[1:]
 with open(p, encoding='utf-8') as f:
@@ -986,7 +1065,7 @@ for a in data.get("assets", []):
 PY
 )"
 
-        checksum_url="$($PYTHON - "$release_json" <<'PY'
+        checksum_url="$("$PYTHON" - "$release_json" <<'PY'
 import json, sys
 with open(sys.argv[1], encoding='utf-8') as f:
     data = json.load(f)
@@ -1008,29 +1087,29 @@ PY
                         if [ -n "$expected" ]; then
                             actual="$(sha256sum "$spk" | awk '{print $1}')"
                             if [ "$actual" != "$expected" ]; then
-                                warn "SHA256 invalide pour le SPK Decypharr"
+                                warn "Invalid SHA256 for Decypharr SPK"
                                 rm -f "$spk"
                                 return 1
                             fi
-                            log "SHA256 Decypharr valide"
+                            log "Decypharr SHA256 verified"
                         fi
                     fi
                 fi
 
-                if install_local_decypharr_spk "$spk"; then
-                    log "Decypharr installed from GitHub Release"
+                if install_local_decypharr_spk "$spk" && decypharr_target_met; then
+                    log "Decypharr target reached from GitHub Release"
                     return 0
                 fi
             fi
         else
-            warn "No DSM $DSM_MAJOR.$DSM_MINOR / $ARCH asset found in the latest Decypharr release."
+            warn "No DSM $DSM_MAJOR.$DSM_MINOR / $ARCH asset found in Decypharr release v$release_version."
         fi
     else
         warn "No usable Decypharr GitHub release found."
     fi
 
-    warn "Decypharr could not be installed automatically."
-    warn "Fournis un SPK avec : DECYPHARR_SPK=/chemin/decypharr-...spk $0"
+    warn "Decypharr >= $DECYPHARR_TARGET_VERSION could not be installed automatically."
+    warn "Provide a compatible SPK with: DECYPHARR_SPK=/path/decypharr-...spk $0"
     return 1
 }
 
@@ -1066,6 +1145,12 @@ if id "$DECYPHARR_USER" >/dev/null 2>&1; then
     log "Decypharr directories assigned to $DECYPHARR_USER"
 else
     warn "Decypharr service account not found: $DECYPHARR_USER"
+fi
+
+if [ -x /var/packages/decypharr/target/bin/decypharr-fuse-fix ]; then
+    info "Applying Decypharr Synology FUSE/runtime repair"
+    /var/packages/decypharr/target/bin/decypharr-fuse-fix >"$TMPBASE/decypharr-fuse-fix.log" 2>&1 || \
+        warn "Decypharr FUSE helper reported a problem; see $TMPBASE/decypharr-fuse-fix.log"
 fi
 
 # Stop cleanly before replacing the runtime configuration and touching the FUSE mount point.
@@ -1372,13 +1457,14 @@ def choose_uid_gid():
 
 
 def config_owner():
-    if os.path.exists(CONFIG_JSON):
-        st = os.stat(CONFIG_JSON)
-        return st.st_uid, st.st_gid
+    preferred = os.environ.get("DECYPHARR_RUNTIME_USER", "sc-decypharr")
     try:
-        p = pwd.getpwnam("sc-decypharr")
+        p = pwd.getpwnam(preferred)
         return p.pw_uid, p.pw_gid
     except KeyError:
+        if os.path.exists(CONFIG_JSON):
+            st = os.stat(CONFIG_JSON)
+            return st.st_uid, st.st_gid
         return os.getuid(), os.getgid()
 
 
@@ -1502,10 +1588,14 @@ chmod 700 "$DECYPHARR_SYNC"
 
 # Run the generator immediately. stack.json remains the managed source of truth.
 export DECYPHARR_CONFIG DECYPHARR_CACHE_DIR
+export DECYPHARR_RUNTIME_USER="$DECYPHARR_USER"
 "$PYTHON" "$DECYPHARR_SYNC" || {
     err "Unable to generate the Decypharr runtime configuration from stack.json."
     exit 1
 }
+if id "$DECYPHARR_USER" >/dev/null 2>&1; then
+    chown "$DECYPHARR_USER:$DECYPHARR_GID" "$DECYPHARR_CONFIG" 2>/dev/null || true
+fi
 chmod 600 "$DECYPHARR_CONFIG" 2>/dev/null || true
 log "Decypharr configuration generated from stack.json"
 
@@ -1536,7 +1626,12 @@ case "\${1:-start}" in
     DECYPHARR_PORT='$DECYPHARR_PORT' \\
     RADARR_CATEGORY='$RADARR_CATEGORY' \\
     SONARR_CATEGORY='$SONARR_CATEGORY' \\
+    DECYPHARR_RUNTIME_USER='$DECYPHARR_USER' \\
       "\$PY" '$DECYPHARR_SYNC' >> '$DECYPHARR_APPDATA/stack-sync.log' 2>&1 || exit 0
+    if id '$DECYPHARR_USER' >/dev/null 2>&1; then
+      chown '$DECYPHARR_USER:$DECYPHARR_GID' '$DECYPHARR_CONFIG' >> '$DECYPHARR_APPDATA/stack-sync.log' 2>&1 || true
+      chmod 600 '$DECYPHARR_CONFIG' >> '$DECYPHARR_APPDATA/stack-sync.log' 2>&1 || true
+    fi
     if [ -d /var/packages/decypharr ]; then
       synopkg restart decypharr >> '$DECYPHARR_APPDATA/stack-sync.log' 2>&1 || true
     fi
@@ -1898,4 +1993,4 @@ printf 'Important: stack.json remains the configuration source of truth.\n'
 if [ "$INSTALL_BOOT_SYNC" = "1" ]; then printf 'The Decypharr runtime is regenerated from stack.json at every DSM boot.\n'; fi
 
 printf '============================================================\n'
-# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.2
+# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.3
