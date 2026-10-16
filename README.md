@@ -261,6 +261,17 @@ su -s /bin/sh -c \
 
 ## Package behavior
 
+The bootstrap manages the native Decypharr package against a minimum target version. Version 8.3 targets **Decypharr 2.7 or newer** by default. Existing older installations are upgraded from a compatible local SPK or from the latest native Synology release in `ESI69190/decypharr`.
+
+Automatic upgrade can be disabled with:
+
+```text
+UPGRADE_DECYPHARR=0
+```
+
+The minimum can be overridden explicitly with `DECYPHARR_TARGET_VERSION`, although lowering it is not recommended.
+
+
 For each component, the bootstrap first checks whether the package is already installed. Existing installations are preserved and reused.
 
 It can install or reuse:
@@ -319,14 +330,16 @@ The runtime configuration is generated from `stack.json` and synchronized again 
 
 Radarr and Sonarr are not injected into Decypharr's `arrs` list by the bootstrap. Decypharr discovers those instances natively from the qBittorrent-compatible download clients configured in Radarr and Sonarr. Legacy bootstrap-created `source=config` Radarr/Sonarr entries are removed while unrelated manual Arr entries are preserved.
 
-The expected API state is two auto-discovered instances:
+With Decypharr 2.7, the expected API state after both download clients have authenticated is two auto-discovered instances keyed by the configured qBittorrent categories:
 
 ```text
-radarr      type=radarr  source=auto
-tv-sonarr   type=sonarr  source=auto
+radarr   type=radarr  source=auto
+sonarr   type=sonarr  source=auto
 ```
 
 The bootstrap also sets AllDebrid `download_uncached` to `true`, allowing Decypharr to submit valid uncached releases to AllDebrid while keeping Arr discovery native and duplicate-free.
+
+The generated runtime configuration is atomically written and explicitly returned to the Decypharr service account. This prevents a root-run bootstrap or boot synchronization from leaving `config.json` as `root:root 0600`, which would make the native service fail with `permission denied`. The Decypharr 2.7 SPK also repairs runtime ownership and FUSE helper permissions before service start.
 
 Verify Decypharr:
 
@@ -617,4 +630,4 @@ For an existing/custom deployment, validate the configured `STACK_JSON` path ins
 
 ## Version
 
-This document corresponds to **PLEX Bootstrap Synology 8.2**.
+This document corresponds to **PLEX Bootstrap Synology 8.3**.

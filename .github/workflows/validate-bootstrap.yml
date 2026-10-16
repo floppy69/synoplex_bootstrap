@@ -1,0 +1,21 @@
+name: Validate SynoPlex bootstrap
+
+on:
+  push:
+    paths:
+      - "PLEX-bootstrap-Synology.sh"
+      - ".github/workflows/validate-bootstrap.yml"
+  pull_request:
+    paths:
+      - "PLEX-bootstrap-Synology.sh"
+      - ".github/workflows/validate-bootstrap.yml"
+
+jobs:
+  shell-syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate POSIX shell syntax
+        run: /bin/sh -n PLEX-bootstrap-Synology.sh
+      - name: Validate integrity marker
+        run: tail -n 5 PLEX-bootstrap-Synology.sh | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.3$'
