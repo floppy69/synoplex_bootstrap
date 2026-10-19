@@ -1,633 +1,204 @@
 # PLEX Bootstrap Synology
 
-## Purpose
+**Install and configure a native Synology DSM 7.x Plex media stack with one command.**
 
-`PLEX-bootstrap-Synology.sh` bootstraps and maintains a native Synology DSM 7 media stack built around Plex, the *Arr applications, Decypharr, qBittorrent, Bazarr, and an n8n orchestration workflow.
+PLEX Bootstrap Synology v8.3 manages Plex Media Server, Radarr, Sonarr, Prowlarr, Decypharr, qBittorrent and Bazarr. An n8n orchestration workflow is provided separately for Plex Watchlists and download routing.
 
-The bootstrap is designed to be rerunnable. Existing configuration is preserved wherever possible, and `stack.json` remains the central source of truth for service URLs, API keys, paths, and secrets.
+> **Before you run it:** This script installs packages and changes local service configuration, directories and DSM permissions. Review the [bootstrap script](./PLEX-bootstrap-Synology.sh) if you are not familiar with it, and back up any existing configuration.
 
-## Managed components
+## Quick installation: one line
 
-The target stack contains:
+Connect to the **Synology NAS itself** over SSH with a DSM administrator account that can run **sudo**. From a writable, trusted directory, paste this **single line**:
 
-- **Plex Media Server** for media playback and libraries.
-- **Radarr** for movies.
-- **Sonarr** for TV series.
-- **Prowlarr** for indexer management.
-- **Decypharr** as the primary qBittorrent-compatible download client backed by AllDebrid.
-- **qBittorrent** as a second download client and fallback path.
-- **Bazarr** for subtitles.
-- **n8n** for orchestration, Plex Watchlist processing, client selection, health checks, and post-download handling.
+~~~sh
+curl -fsSL https://raw.githubusercontent.com/floppy69/synoplex_bootstrap/main/PLEX-bootstrap-Synology.sh -o PLEX-bootstrap-Synology.sh && /bin/sh -n PLEX-bootstrap-Synology.sh && sudo /bin/sh PLEX-bootstrap-Synology.sh
+~~~
 
-## Target architecture
+The command downloads the current main-branch script, checks its shell syntax and launches the interactive installer with administrator privileges. It saves the downloaded script locally so it can be inspected and run again.
 
-```text
-                         Prowlarr
-                            |
-                            v
-                    Radarr / Sonarr
-                      |         |
-                      | downloadClientId
-                      v
-                 n8n routing policy
-                  /             \
-                 /               \
-        Decypharr :8282      qBittorrent
-             |                    |
-             v                    v
-          AllDebrid          BitTorrent swarm
-                 \               /
-                  \             /
-                   v           v
-                  Radarr / Sonarr
-                        |
-                        v
-                 Movies / Series
-                        |
-                        v
-                       Plex
-```
+**Do not use a direct pipe such as curl | sh.** The bootstrap reads its answers from standard input; piping the downloaded script into a shell would consume that input and can turn the installation into non-interactive mode.
 
-Radarr and Sonarr keep **both** Decypharr and qBittorrent configured. n8n explicitly selects the client for each grab through the `downloadClientId` supported by the Radarr and Sonarr APIs.
+Follow the prompts to confirm the NAS address, installation paths, package choices, ports, the DSM account used by n8n and the AllDebrid API key. Press Enter to accept detected or suggested values. Secrets entered through the interactive key prompt are not echoed.
 
-The preferred route is Decypharr. qBittorrent is used as fallback when Decypharr explicitly refuses a grab. A timeout or ambiguous network failure must **not** trigger an automatic fallback, because the first request may already have been accepted and blindly retrying through qBittorrent could create a duplicate download.
+If Plex cannot be installed through the DSM package catalog, install the official Plex package using DSM Package Center and run the same command again.
 
-## Reference files
+### Requirements
 
-Bootstrap script:
+- Synology **DSM 7.x**, with SSH enabled.
+- A DSM account authorized to use **sudo**.
+- Network access to GitHub and to the relevant package sources.
+- **curl** available on the NAS.
+- The **SynoCommunity** package source for missing community packages.
+- A valid **AllDebrid API key** for a new Decypharr configuration.
+- FUSE support for the Decypharr mount. Python 3 is needed for JSON operations; the bootstrap attempts to find or install a suitable runtime.
 
-```text
-PLEX-bootstrap-Synology.sh
-```
+Run this **on the NAS**, not inside the n8n Docker container or on a separate Linux machine.
 
-Documentation:
+## What the bootstrap configures
 
-```text
-PLEX-bootstrap-Synology.md
-```
+| Component | Purpose | Typical port |
+| --- | --- | ---: |
+| Plex Media Server | Movies and TV libraries | 32400 |
+| Radarr | Movie management | 7878 |
+| Sonarr | TV series management | 8989 |
+| Prowlarr | Indexer management | 9696 |
+| Decypharr | AllDebrid-backed, qBittorrent-compatible client | 8282 |
+| qBittorrent | Secondary/fallback download client | 8095 |
+| Bazarr | Subtitles | 6767 |
 
-Main configuration file on a new default installation:
+These are **defaults**, not a claim about your existing setup. The bootstrap detects existing Radarr, Sonarr, Prowlarr and qBittorrent ports where possible. For example, a Radarr installation already using port 8310 is not supposed to be reset to 7878.
 
-```text
-/volume1/PlexMediaServer/stack.json
-```
+The installer:
 
-Persistent Watchlist state:
+1. Detects DSM, hardware architecture, installed packages and existing configuration.
+2. Installs missing packages where compatible sources are available, or reuses installed packages.
+3. Initializes or safely merges the configuration file, preserving unknown JSON keys.
+4. Creates the Watchlist state file if it does not exist.
+5. Prepares media/download directories and applies restricted DSM ACLs.
+6. Configures Decypharr from the central configuration, including optional DSM boot synchronization.
+7. Configures the Decypharr download client in Radarr and Sonarr where the APIs are reachable.
 
-```text
-/volume1/PlexMediaServer/watchlist-state.json
-```
+Decypharr 2.7 or newer is the default target for v8.3. Existing older Decypharr installations can be upgraded when a compatible package is available.
 
-Existing deployments using custom paths such as `/volume1/VideoFactory/_Plex/stack.json` are not migrated automatically.
+## Default paths
 
-Decypharr runtime configuration:
+For a **new installation**, the default state location is the Plex-created shared folder on the first detected storage volume:
 
-```text
-/var/packages/decypharr/var/data/config.json
-```
-
-DSM boot synchronization script:
-
-```text
-/usr/local/etc/rc.d/S99decypharr-stack-sync.sh
-```
-
-The Decypharr runtime file is generated from `stack.json`. Do not treat the runtime file as the permanent configuration source.
-
-## Recommended directory layout
-
-On a new installation, SynoPlex configuration/state and Decypharr default to the Plex-created `PlexMediaServer` shared folder:
-
-```text
+~~~text
 /volume1/
-|
-+-- PlexMediaServer/
-|   +-- stack.json
-|   +-- watchlist-state.json
-|   +-- decypharr/
-|       +-- mount/
-|       +-- downloads/
-|
-+-- VideoFactory/
-    +-- _Plex/
-        +-- media/
-        |   +-- Movies/
-        |   +-- Series/
-        +-- downloads/
-            +-- qbittorrent/
-```
-
-The bootstrap does not require `/volume1` specifically. It detects an existing `/volume*/PlexMediaServer` directory and uses it as the default state root for new installations. If an existing SynoPlex `stack.json` is found in the legacy `VideoFactory/_Plex` locations, those legacy paths remain the defaults on rerun. Explicit `STACK_JSON`, `WATCHLIST_STATE`, `DECYPHARR_ROOT`, and related variables always override automatic detection. Existing deployments are not migrated automatically.
-
-## Default ports
-
-| Service | Default port |
-|---|---:|
-| Plex | 32400 |
-| Radarr | 7878 or detected existing port |
-| Sonarr | 8989 or detected existing port |
-| Prowlarr | 9696 or detected existing port |
-| Decypharr | 8282 |
-| qBittorrent | 8095 or detected existing port |
-| Bazarr | 6767 |
-
-Existing *Arr ports are read from their `config.xml` files when available. Existing qBittorrent WebUI settings are also inspected when possible.
-
-## Prerequisites
-
-- Synology DSM 7.x.
-- Root access through SSH.
-- Internet access from the NAS when packages or Decypharr releases must be downloaded.
-- SynoCommunity configured when SynoCommunity packages are required.
-- A valid AllDebrid API key.
-- Python 3. The bootstrap can attempt to install a SynoCommunity Python runtime when necessary.
-- FUSE support for the Decypharr DFS mount.
-
-## Installation
-
-Copy the bootstrap to the NAS, for example:
-
-```text
-/volume1/VideoFactory/_Plex/PLEX-bootstrap-Synology.sh
-```
-
-Open an SSH session and become root:
-
-```bash
-sudo -i
-cd /volume1/VideoFactory/_Plex
-chmod 755 PLEX-bootstrap-Synology.sh
-```
-
-Validate the script before execution:
-
-```bash
-/bin/ash -n PLEX-bootstrap-Synology.sh
-echo $?
-```
-
-Expected result:
-
-```text
-0
-```
-
-Run the bootstrap:
-
-```bash
-./PLEX-bootstrap-Synology.sh
-```
-
-## Interactive configuration
-
-The bootstrap asks for the NAS address, directories, ports, installation choices, and ownership settings.
-
-New-install defaults on the reference volume are:
-
-```text
-NAS address          : 192.168.0.4
-stack.json directory : /volume1/PlexMediaServer
-watchlist-state.json : /volume1/PlexMediaServer/watchlist-state.json
-Plex data root       : /volume1/VideoFactory/_Plex
-Plex library root    : /volume1/VideoFactory/_Plex/media
-Movies               : /volume1/VideoFactory/_Plex/media/Movies
-Series               : /volume1/VideoFactory/_Plex/media/Series
-Decypharr root       : /volume1/PlexMediaServer/decypharr
-Decypharr mount      : /volume1/PlexMediaServer/decypharr/mount
-Decypharr downloads  : /volume1/PlexMediaServer/decypharr/downloads
-Decypharr appdata    : /var/packages/decypharr/var
-qBittorrent downloads: /volume1/VideoFactory/_Plex/downloads/qbittorrent
-```
-
-Existing installations keep their current locations. The bootstrap also auto-detects the previous `/volumeX/VideoFactory/_Plex[/_Config]/stack.json` layout and reuses it on rerun. It does not move an existing `stack.json`, Watchlist state file, or Decypharr tree.
-
-On the reference installation, Radarr currently uses port `8310`, which is detected automatically from its existing configuration.
-
-## stack.json ownership and n8n access
-
-`stack.json` contains secrets, so it must not be made world-readable.
-
-The recommended model is:
-
-```text
-Floppy       -> owner, read/write
-VideoFactory -> read-only through DSM ACL, used by the n8n CIFS mount
-root         -> implicit administrative access
-others       -> no direct access
-```
-
-The file remains protected with Unix mode `0600` for its owner, while DSM ACL entries grant narrowly scoped access where required.
-
-The reference n8n host mounts the NAS share as:
-
-```text
-//192.168.0.4/VideoFactory -> /data/video-factory
-SMB account: videofactory / VideoFactory
-```
-
-n8n therefore expects the configuration at:
-
-```text
-/data/video-factory/_Plex/stack.json
-```
-
-The bootstrap explicitly asks for the DSM account used by n8n to read `stack.json` and applies the required DSM ACL without granting write permission to that account.
-
-### Permission verification
-
-On the Synology NAS:
-
-```bash
-ls -l /volume1/VideoFactory/_Plex/stack.json
-/usr/syno/bin/synoacltool -get /volume1/VideoFactory/_Plex
-/usr/syno/bin/synoacltool -get /volume1/VideoFactory/_Plex/stack.json
-```
-
-Test the owner:
-
-```bash
-su -s /bin/sh -c \
-  'test -r /volume1/VideoFactory/_Plex/stack.json && echo READ_OK' \
-  Floppy
-```
-
-Test the n8n SMB account:
-
-```bash
-su -s /bin/sh -c \
-  'test -r /volume1/VideoFactory/_Plex/stack.json && echo N8N_READ_OK' \
-  VideoFactory
-```
-
-## Package behavior
-
-The bootstrap manages the native Decypharr package against a minimum target version. Version 8.3 targets **Decypharr 2.7 or newer** by default. Existing older installations are upgraded from a compatible local SPK or from the latest native Synology release in `ESI69190/decypharr`.
-
-Automatic upgrade can be disabled with:
-
-```text
-UPGRADE_DECYPHARR=0
-```
-
-The minimum can be overridden explicitly with `DECYPHARR_TARGET_VERSION`, although lowering it is not recommended.
-
-
-For each component, the bootstrap first checks whether the package is already installed. Existing installations are preserved and reused.
-
-It can install or reuse:
-
-```text
-PlexMediaServer
-radarr
-sonarr
-prowlarr
-qbittorrent
-bazarr
-decypharr
-```
-
-Decypharr is installed from an explicitly supplied SPK, a compatible local SPK, or the configured GitHub release source when required.
-
-## stack.json behavior
-
-The bootstrap performs a non-destructive JSON merge. Unknown keys are preserved.
-
-Managed sections include at least:
-
-```text
-plex
-radarr
-sonarr
-prowlarr
-qbittorrent
-bazarr
-decypharr
-paths
-```
-
-API keys for Radarr, Sonarr, and Prowlarr are collected from their native configuration files when available.
-
-The AllDebrid key is read from existing compatible locations inside `stack.json`. New or updated bootstrap-managed configuration stores it under `decypharr.alldebrid_api_key`. If no compatible key can be found, the bootstrap prompts for it without echoing the secret to the terminal.
-
-## Decypharr configuration
-
-Decypharr listens on the configured port, normally:
-
-```text
-8282
-```
-
-Radarr and Sonarr use Decypharr through its qBittorrent-compatible API.
-
-The standard categories are:
-
-```text
-Radarr -> radarr
-Sonarr -> sonarr
-```
-
-The runtime configuration is generated from `stack.json` and synchronized again at DSM boot.
-
-Radarr and Sonarr are not injected into Decypharr's `arrs` list by the bootstrap. Decypharr discovers those instances natively from the qBittorrent-compatible download clients configured in Radarr and Sonarr. Legacy bootstrap-created `source=config` Radarr/Sonarr entries are removed while unrelated manual Arr entries are preserved.
-
-With Decypharr 2.7, the expected API state after both download clients have authenticated is two auto-discovered instances keyed by the configured qBittorrent categories:
-
-```text
-radarr   type=radarr  source=auto
-sonarr   type=sonarr  source=auto
-```
-
-The bootstrap also sets AllDebrid `download_uncached` to `true`, allowing Decypharr to submit valid uncached releases to AllDebrid while keeping Arr discovery native and duplicate-free.
-
-The generated runtime configuration is atomically written and explicitly returned to the Decypharr service account. This prevents a root-run bootstrap or boot synchronization from leaving `config.json` as `root:root 0600`, which would make the native service fail with `permission denied`. The Decypharr 2.7 SPK also repairs runtime ownership and FUSE helper permissions before service start.
-
-Verify Decypharr:
-
-```bash
-curl -s http://127.0.0.1:8282/version
-synopkg status decypharr
-```
-
-Inspect the generated configuration:
-
-```bash
-/bin/python3 -m json.tool \
-  /var/packages/decypharr/var/data/config.json
-```
-
-Inspect synchronization logs:
-
-```bash
-tail -100 /var/packages/decypharr/var/stack-sync.log
-```
-
-## Radarr and Sonarr download clients
-
-Both applications must contain **two** enabled qBittorrent-compatible clients.
-
-### Radarr
-
-Decypharr:
-
-```text
-Name     : Decypharr
-Host     : NAS address
-Port     : 8282
-Category : radarr
-Priority : 1
-```
-
-qBittorrent:
-
-```text
-Name     : qBittorrent
-Host     : NAS address
-Port     : configured qBittorrent port
-Category : radarr
-Priority : 10
-```
-
-### Sonarr
-
-Decypharr:
-
-```text
-Name     : Decypharr
-Host     : NAS address
-Port     : 8282
-Category : sonarr
-Priority : 1
-```
-
-qBittorrent:
-
-```text
-Name     : qBittorrent
-Host     : NAS address
-Port     : configured qBittorrent port
-Category : sonarr
-Priority : 10
-```
-
-The n8n workflow reconciles these clients from `stack.json` and uses the *Arr API `downloadClientId` value to select the client per grab.
-
-## n8n workflow
-
-Workflow name:
-
-```text
-PLEX Bootstrap Synology - Orchestrator
-```
-
-The workflow handles:
-
-- periodic Plex Watchlist scans;
-- multi-user Watchlist reconciliation;
-- Radarr and Sonarr creation/monitoring;
-- explicit per-release download client selection;
-- Decypharr-first routing;
-- qBittorrent fallback after explicit Decypharr rejection;
-- Decypharr and qBittorrent health checks;
-- download-client reconciliation in Radarr and Sonarr;
-- completed qBittorrent download handling and seeding protection;
-- safe cleanup when items are removed from the Plex Watchlist.
-
-### Routing policy
-
-```text
-Release selected
-      |
-      v
-Attempt Decypharr
-      |
-      +-- accepted ----------------------> Decypharr / AllDebrid
-      |
-      +-- HTTP 400 or HTTP 409
-                |
-                v
-          qBittorrent fallback
-
-Timeout / unknown network state
-      |
-      v
-No automatic fallback
-```
-
-This policy prevents accidental duplicate downloads when the state of the first request is uncertain.
-
-## Prowlarr
-
-Prowlarr centralizes indexers for Radarr and Sonarr.
-
-Open:
-
-```text
-http://NAS:9696
-```
-
-Configure Radarr and Sonarr as Prowlarr applications using the URLs and API keys stored in `stack.json`.
-
-## Bazarr
-
-Bazarr needs read/write access to the movie and series directories because subtitle files are stored alongside the media.
-
-Open:
-
-```text
-http://NAS:6767
-```
-
-Configure Radarr and Sonarr using their respective URLs and API keys from `stack.json`, then configure subtitle languages and providers.
-
-## Plex
-
-Open:
-
-```text
-http://NAS:32400/web
-```
-
-Recommended libraries:
-
-Movies:
-
-```text
-/volume1/VideoFactory/_Plex/media/Movies
-```
-
-Series:
-
-```text
-/volume1/VideoFactory/_Plex/media/Series
-```
-
-Plex only requires read access to the media library and the Decypharr mounted content required by the deployment.
-
-## ACL model
-
-The bootstrap applies DSM ACLs for the service accounts.
-
-Typical intent:
-
-| Account | Access |
-|---|---|
-| PlexMediaServer | Read media and Decypharr mount |
-| sc-radarr | Read/write Movies and required download paths |
-| sc-sonarr | Read/write Series and required download paths |
-| sc-decypharr | Read/write Decypharr data, mount, and downloads |
-| sc-qbittorrent | Read/write qBittorrent download directory |
-| sc-bazarr | Read/write Movies and Series for subtitles |
-| stack.json owner | Read/write stack configuration |
-| n8n SMB account | Read-only stack.json access |
-
-Do not solve ACL problems with `chmod 777`. `stack.json` contains credentials and API keys.
-
-## Post-installation validation
-
-Check package state:
-
-```bash
-synopkg status PlexMediaServer
-synopkg status radarr
-synopkg status sonarr
-synopkg status prowlarr
-synopkg status qbittorrent
-synopkg status bazarr
-synopkg status decypharr
-```
-
-All installed components should report a running state.
-
-Check service URLs:
-
-```text
-Plex        http://NAS:32400/web
-Radarr      http://NAS:<detected-port>
-Sonarr      http://NAS:8989
-Prowlarr    http://NAS:9696
-Decypharr   http://NAS:8282
-qBittorrent http://NAS:<detected-port>
-Bazarr      http://NAS:6767
-```
-
-## End-to-end test
-
-1. Add a small movie to the Plex Watchlist.
-2. Let the n8n workflow reconcile the Watchlist.
-3. Confirm Radarr creates or monitors the movie.
-4. Confirm the n8n execution reports the chosen download client.
-5. Verify the torrent appears in only one download client.
-6. When the download completes, verify Radarr imports it into Movies.
-7. Confirm Plex detects the imported media.
-8. Repeat with a TV episode through Sonarr.
-
-Useful monitoring commands:
-
-```bash
-tail -f /var/packages/decypharr/var/logs/*
-```
-
-```bash
-find /volume1/VideoFactory/_Decypharr \
-  -maxdepth 4 \
-  \( -type f -o -type l \) \
-  2>/dev/null
-```
-
-```bash
-find /volume1/VideoFactory/_Plex/media \
-  -maxdepth 4 \
-  \( -type f -o -type l \) \
-  2>/dev/null
-```
-
-## Maintenance
-
-### Rerun the bootstrap
-
-The bootstrap is intended to be rerunnable:
-
-```bash
-./PLEX-bootstrap-Synology.sh
-```
-
-Existing installed packages are reused and existing unknown `stack.json` keys are preserved.
-
-### Change the AllDebrid API key
-
-Update `stack.json`, then run:
-
-```bash
+├── PlexMediaServer/
+│   ├── stack.json
+│   ├── watchlist-state.json
+│   └── decypharr/
+│       ├── mount/
+│       └── downloads/
+└── VideoFactory/
+    └── _Plex/
+        ├── media/
+        │   ├── Movies/
+        │   └── Series/
+        └── downloads/
+            └── qbittorrent/
+~~~
+
+Other volume numbers are supported. Plex must create its shared folder before it can be used as the default state root.
+
+**Existing deployments are not automatically migrated.** A previous configuration in /volumeX/VideoFactory/_Plex/stack.json or /volumeX/VideoFactory/_Plex/_Config/stack.json is detected and reused. Explicit path environment variables override automatic detection.
+
+### Central configuration
+
+**stack.json** is the source of truth for paths, service endpoints, API keys and Decypharr settings. The generated Decypharr runtime file lives at:
+
+~~~text
+/var/packages/decypharr/var/data/config.json
+~~~
+
+When enabled, the DSM boot synchronization hook is:
+
+~~~text
 /usr/local/etc/rc.d/S99decypharr-stack-sync.sh
-```
+~~~
 
-or restart Decypharr.
+Do not edit the generated Decypharr runtime file as the permanent source of configuration: synchronization can overwrite it.
 
-### Validate stack.json
+## n8n orchestration (separate setup)
 
-```bash
-/bin/python3 -m json.tool \
-  /volume1/PlexMediaServer/stack.json >/dev/null \
-  && echo JSON_OK
-```
+The repository includes [PLEX Bootstrap Synology - Orchestrator.json](./PLEX%20Bootstrap%20Synology%20-%20Orchestrator.json).
 
-For an existing/custom deployment, validate the configured `STACK_JSON` path instead.
+**The one-line installer does not install n8n or automatically import this workflow.** After installing the NAS services:
 
-### Validate the bootstrap itself
+1. Import the JSON workflow into your existing n8n instance.
+2. Configure the n8n credentials, connections and scheduling for your environment.
+3. Mount or otherwise expose the **actual directory containing stack.json** to n8n with read-only access for the configuration file.
+4. Verify the workflow reads that exact path, then test one movie and one TV episode from Plex Watchlists.
 
-```bash
-/bin/ash -n PLEX-bootstrap-Synology.sh
-```
+**Important for new installations:** If stack.json is at /volume1/PlexMediaServer/stack.json, an SMB mount exposing only /volume1/VideoFactory **will not contain that file**. Adjust the n8n mount/path or explicitly choose a configuration path accessible to the workflow. Do not weaken permissions or publish API keys to make it work.
 
-## Security notes
+The intended orchestration is:
 
-- Keep `stack.json` private.
-- Do not print API keys in workflow execution data.
-- n8n only needs read access to `stack.json`.
-- The DSM boot synchronization process runs as root and can read the protected file.
-- Use explicit DSM ACL entries instead of weakening Unix permissions for the entire share.
-- Do not automatically send the same torrent to Decypharr and qBittorrent.
+~~~text
+Plex Watchlist
+      |
+      v
+     n8n
+      |
+      v
+Radarr / Sonarr <---- Prowlarr
+      |
+      +--> Decypharr --> AllDebrid
+      |
+      +--> qBittorrent (fallback)
+      |
+      v
+   Plex libraries
+~~~
 
-## Version
+Radarr and Sonarr can have both download clients configured. The n8n workflow selects the appropriate client per grab. It should use qBittorrent as a fallback only after an explicit Decypharr rejection, **not after an ambiguous timeout**, to avoid duplicate downloads.
 
-This document corresponds to **PLEX Bootstrap Synology 8.3**.
+Use the categories **radarr** and **sonarr** for their corresponding applications; do not substitute tv-sonarr unless your configuration explicitly requires it.
+
+## After installation
+
+The installer prints the detected service URLs, configuration paths and package status. Check the services from an SSH session on the NAS:
+
+~~~sh
+sudo synopkg status PlexMediaServer
+sudo synopkg status radarr
+sudo synopkg status sonarr
+sudo synopkg status prowlarr
+sudo synopkg status qbittorrent
+sudo synopkg status bazarr
+sudo synopkg status decypharr
+curl -fsS http://127.0.0.1:8282/version
+~~~
+
+The default Plex URL is **http://NAS-IP:32400/web**. Use the IP address and ports reported by your installation for the other interfaces.
+
+Once the n8n workflow is configured, test one Plex Watchlist movie and one series episode. Confirm the selected client receives the grab only once, Radarr/Sonarr import the completed media, and Plex detects the result.
+
+If a package is missing or failed, inspect the final bootstrap report and the related installation logs under /tmp/plex-bootstrap-synology.
+
+## Updating or rerunning
+
+Run the **same one-line command** from the Quick installation section whenever you want to download the latest main-branch bootstrap and rerun it. The script is designed to preserve existing paths and configuration where possible, but it can install packages, upgrade Decypharr and reconcile managed settings. Make a backup before rerunning it on a production NAS.
+
+To run the script you already downloaded, without fetching a new copy:
+
+~~~sh
+sudo /bin/sh ./PLEX-bootstrap-Synology.sh
+~~~
+
+To prevent an automatic Decypharr upgrade on a rerun:
+
+~~~sh
+sudo env UPGRADE_DECYPHARR=0 /bin/sh ./PLEX-bootstrap-Synology.sh
+~~~
+
+The bootstrap also supports environment overrides such as STACK_JSON, WATCHLIST_STATE, DECYPHARR_ROOT and NAS_IP. For unattended runs, set INTERACTIVE=0 **and provide all required configuration and secrets securely**. The default quick-install command intentionally remains interactive.
+
+## Security
+
+- Treat stack.json as a **secret**. It contains API keys and must not be world-readable.
+- The installer uses ownership and DSM ACLs to grant the required service accounts access. Never solve permissions problems with chmod 777.
+- Give n8n read-only access to stack.json, not unrestricted access to the NAS.
+- Keep secrets out of shell history, Git commits and n8n execution logs.
+- The one-line command executes code from the main branch with elevated permissions. Use the manual review method below when you need to inspect or pin the script before running it.
+
+### Manual download and review
+
+~~~sh
+curl -fsSL https://raw.githubusercontent.com/floppy69/synoplex_bootstrap/main/PLEX-bootstrap-Synology.sh -o PLEX-bootstrap-Synology.sh
+/bin/sh -n PLEX-bootstrap-Synology.sh
+less PLEX-bootstrap-Synology.sh
+sudo /bin/sh PLEX-bootstrap-Synology.sh
+~~~
+
+## Files
+
+- [PLEX-bootstrap-Synology.sh](./PLEX-bootstrap-Synology.sh): DSM 7 bootstrap, v8.3.
+- [PLEX Bootstrap Synology - Orchestrator.json](./PLEX%20Bootstrap%20Synology%20-%20Orchestrator.json): n8n workflow.
+- [README.md](./README.md): installation, configuration and verification.
+
+---
+
+**Supported target:** Synology DSM 7.x. **Bootstrap version:** 8.3. **Decypharr minimum target:** 2.7.
