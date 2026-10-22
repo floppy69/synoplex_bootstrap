@@ -60,6 +60,21 @@ The installer:
 
 Decypharr 2.7 or newer is the default target for v8.3. Existing older Decypharr installations can be upgraded when a compatible package is available.
 
+## Decypharr DFS mount helper on Synology
+
+The native Decypharr package runs under the restricted DSM service account,
+but libfuse requires its installed fusermount3 helper to be **owned by root
+with mode 4755** to create a FUSE filesystem. On a Synology package upgrade
+the helper can be left owned by sc-decypharr instead. In this case Decypharr's
+HTTP API may respond normally while the DFS mount is **absent**.
+
+The bootstrap now checks the package-installed fusermount/fusermount3 regular
+files and restores their root ownership and setuid bit before restarting
+Decypharr. This does not modify media files, symlinks or DSM ACLs.
+
+When troubleshooting, verify both the process and the actual mount with
+/proc/mounts. An HTTP 200 from Decypharr is not a mount-health check.
+
 ## Synology DSM ACL safety and repair
 
 The bootstrap **never removes or rewrites existing DSM ACL entries**. It checks
