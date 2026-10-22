@@ -60,6 +60,57 @@ The installer:
 
 Decypharr 2.7 or newer is the default target for v8.3. Existing older Decypharr installations can be upgraded when a compatible package is available.
 
+## Synology DSM ACL safety and repair
+
+The bootstrap **never removes or rewrites existing DSM ACL entries**. It checks
+each exact ACE and adds missing permissions with synoacltool -add. Custom ACLs
+for existing accounts remain intact.
+
+The default **ACL_REPAIR_EXISTING=1** fixes existing media subfolders and
+files as well as the library roots. DSM does not necessarily retroactively
+inherit a new parent ACE into a pre-existing Sonarr-created Season directory.
+For already healthy, very large libraries, ACL_REPAIR_EXISTING=0 disables this
+recursive step. Do not disable it when Plex reports Permission denied.
+
+### Repair an existing NAS without reinstalling
+
+Connect to DSM via SSH with a sudo-capable administrator:
+
+~~~sh
+curl -fsSL https://raw.githubusercontent.com/floppy69/synoplex_bootstrap/main/repair-dsm-acls.sh -o repair-dsm-acls.sh \
+  && /bin/sh -n repair-dsm-acls.sh \
+  && sudo /bin/sh repair-dsm-acls.sh
+~~~
+
+The repair utility defaults to /volume1/VideoFactory/_Plex/media/ for the
+Movies and Series libraries. Override MEDIA_ROOT, STACK_DIR, QBIT_DOWNLOADS,
+DECYPHARR_ROOT, STACK_OWNER or N8N_STACK_READER in its environment for a
+different NAS. STACK_OWNER defaults to the administrator invoking sudo;
+N8N_STACK_READER must refer to the *actual DSM account* used for NAS access,
+not an arbitrary container UID. Run it on DSM, not inside the n8n container.
+
+ACL roles are restricted to each service's needs:
+
+- **PlexMediaServer:** read and traverse media and the Decypharr mount.
+- **Sonarr:** read/write Series and its download category.
+- **Radarr:** read/write Movies and its download category.
+- **Bazarr:** write subtitles next to existing media.
+- **qBittorrent:** write download directories, not the Plex media library.
+- **Decypharr:** manage its mount and downloaded content.
+- **Prowlarr:** does not require write access to the media library.
+- **DSM administrator:** retain media and central configuration access.
+- **n8n DSM account (optional):** import media and access central state.
+
+Existing directories and regular files are checked without following symbolic
+links. No synoacltool -del, -enforce-inherit, chmod -R, or chown -R is used.
+The first pass on a large collection may touch many files.
+
+Verify Plex can browse an affected series before forcing a Plex library scan:
+
+~~~sh
+sudo -u PlexMediaServer ls "/volume1/VideoFactory/_Plex/media/Series/Slam Dunk/Season 1" | head
+~~~
+
 ## Default paths
 
 For a **new installation**, the default state location is the Plex-created shared folder on the first detected storage volume:
