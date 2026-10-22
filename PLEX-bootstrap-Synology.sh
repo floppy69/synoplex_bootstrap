@@ -2102,6 +2102,36 @@ acl_add_rw_tree_dirs() {
     done
 }
 
+# Repair existing media files as well as the library root. Synology DSM
+# may create explicit ACLs on Sonarr directories which do not inherit Plex's
+# ACE from Series/. Never force-inherit, delete or replace existing ACLs.
+acl_repair_media_tree() {
+    tree="$1"
+    arr_user="$2"
+    [ -d "$tree" ] || return 0
+    [ "${ACL_REPAIR_EXISTING:-1}" = "1" ] || return 0
+    case "$tree" in
+        /volume[0-9]*/*) ;;
+        *) warn "Unsafe media ACL root: $tree"; return 0 ;;
+    esac
+    info "Non-destructive media ACL repair: $tree"
+    find "$tree" \( -type d -o -type f \) -print 2>/dev/null | while IFS= read -r entry; do
+        if [ -d "$entry" ]; then
+            acl_add_ro "$entry" "$PLEX_USER"
+            acl_add_rw "$entry" "$arr_user"
+            acl_add_rw "$entry" "$BAZARR_USER"
+            acl_add_rw "$entry" "$STACK_OWNER"
+            [ -z "$N8N_STACK_READER" ] || acl_add_rw "$entry" "$N8N_STACK_READER"
+        elif [ -f "$entry" ]; then
+            acl_add_file_ro "$entry" "$PLEX_USER"
+            acl_add_file_rw "$entry" "$arr_user"
+            acl_add_file_rw "$entry" "$BAZARR_USER"
+            acl_add_file_rw "$entry" "$STACK_OWNER"
+            [ -z "$N8N_STACK_READER" ] || acl_add_file_rw "$entry" "$N8N_STACK_READER"
+        fi
+    done
+}
+
 if [ -x "$ACLTOOL" ]; then
     PLEX_USER="PlexMediaServer"
     RADARR_USER="$(pkg_user radarr)"
@@ -2134,6 +2164,12 @@ if [ -x "$ACLTOOL" ]; then
         acl_add_rw "$QBIT_DOWNLOADS/$SONARR_CATEGORY" "$N8N_STACK_READER"
     fi
 
+    # A DSM administrator should retain access even when packages create
+    # restrictive ACLs on the parent media directory.
+    acl_add_rw "$PLEXROOT" "$STACK_OWNER"
+    acl_add_rw "$PLEX_LIBRARY_ROOT" "$STACK_OWNER"
+    acl_add_rw "$MOVIES_ROOT" "$STACK_OWNER"
+    acl_add_rw "$SERIES_ROOT" "$STACK_OWNER"
     acl_add_ro "$PLEXROOT" "$PLEX_USER"
     acl_add_ro "$PLEX_LIBRARY_ROOT" "$PLEX_USER"
     acl_add_ro "$MOVIES_ROOT" "$PLEX_USER"
@@ -2193,6 +2229,10 @@ if [ -x "$ACLTOOL" ]; then
     acl_add_rw "$DECYPHARR_DOWNLOADS" "$DECYPHARR_USER"
     acl_add_rw "$DECYPHARR_DOWNLOADS/$RADARR_CATEGORY" "$DECYPHARR_USER"
     acl_add_rw "$DECYPHARR_DOWNLOADS/$SONARR_CATEGORY" "$DECYPHARR_USER"
+
+    # Set required roles on pre-existing library contents, not just roots.
+    acl_repair_media_tree "$MOVIES_ROOT" "$RADARR_USER"
+    acl_repair_media_tree "$SERIES_ROOT" "$SONARR_USER"
 
     log "DSM ACLs applied (stack.json: admin=$STACK_OWNER, n8n=${N8N_STACK_READER:-none})"
 else
