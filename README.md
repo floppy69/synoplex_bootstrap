@@ -6,6 +6,35 @@
 
 The bootstrap is designed to be rerunnable. Existing configuration is preserved wherever possible, and `stack.json` remains the central source of truth for service URLs, API keys, paths, and secrets.
 
+## DSM ACL preservation and one-time repair
+
+The native installer preserves all existing DSM ACL entries. The additional
+ACL_REPAIR_EXISTING=1 phase now repairs already-created media directories and
+regular files as well, since Plex cannot always inherit access to folders
+created by Sonarr. ACL_REPAIR_EXISTING=0 skips the recursive existing-file
+repair on an otherwise healthy installation.
+
+To fix an existing NAS **without reinstalling any package**, download and
+verify the standalone repair utility:
+
+~~~sh
+curl -fsSL https://raw.githubusercontent.com/floppy69/synoplex_bootstrap/evol/repair-dsm-acls.sh -o repair-dsm-acls.sh \
+ && /bin/sh -n repair-dsm-acls.sh \
+ && sudo /bin/sh repair-dsm-acls.sh
+~~~
+
+The default media path is /volume1/VideoFactory/_Plex/media. Override
+MEDIA_ROOT, STACK_DIR, QBIT_DOWNLOADS, DECYPHARR_ROOT, STACK_OWNER,
+N8N_STACK_READER or category names as needed. The sudo-calling DSM account
+is used as default stack owner. Never assume a Docker UID equals a DSM account.
+
+Role-specific access is additive: Plex reads libraries, Radarr writes Movies,
+Sonarr writes Series, Bazarr writes subtitles, qBittorrent writes downloads,
+Decypharr writes its own data and mount, the administrator keeps media access,
+and an optional n8n DSM account can write import destinations. Prowlarr needs
+no write permissions to media. No existing synoacltool entries are deleted or
+forcibly inherited.
+
 ## Managed components
 
 The target stack contains:
