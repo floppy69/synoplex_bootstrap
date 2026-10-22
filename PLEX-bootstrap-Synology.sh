@@ -1671,6 +1671,27 @@ else
     printf 'user_allow_other\n' > /etc/fuse.conf 2>/dev/null || true
 fi
 
+# Make the trusted package's FUSE helpers setuid-root, as required for
+# mounting DFS from the unprivileged sc-decypharr service account.
+# Never overwrite existing ACLs or follow arbitrary symlinks here.
+if is_installed decypharr; then
+    for fuse_helper in \
+        /var/packages/decypharr/target/bin/fusermount \
+        /var/packages/decypharr/target/bin/fusermount3
+    do
+        [ -f "$fuse_helper" ] || continue
+        [ ! -L "$fuse_helper" ] || {
+            warn "Skipping symlinked FUSE helper: $fuse_helper"
+            continue
+        }
+        if chown root:root "$fuse_helper" && chmod 4755 "$fuse_helper"; then
+            log "Restored setuid-root FUSE helper: $fuse_helper"
+        else
+            warn "Could not repair FUSE helper permissions: $fuse_helper"
+        fi
+    done
+fi
+
 pkg_user() {
     pkg="$1"
     fallback="sc-$pkg"
