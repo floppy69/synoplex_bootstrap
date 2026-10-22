@@ -1685,53 +1685,65 @@ pkg_user() {
     printf '%s' "$fallback"
 }
 
-acl_remove_user_entries() {
+# Add-only DSM ACL policy. Never remove ACEs or force inheritance.
+dsm_user_exists() {
+    [ -n "$1" ] || return 1
+    id "$1" >/dev/null 2>&1 && return 0
+    [ -x /usr/syno/sbin/synouser ] && /usr/syno/sbin/synouser --get "$1" >/dev/null 2>&1 && return 0
+    return 1
+}
+acl_add_if_missing() {
     target="$1"
-    user="$2"
-    [ -x "$ACLTOOL" ] || return 0
+    ace="$2"
     [ -e "$target" ] || return 0
-
-    indexes="$(
-        "$ACLTOOL" -get "$target" 2>/dev/null |
-        awk -v needle="user:$user:" '
-            index($0, needle) {
-                gsub(/\[/, "", $1)
-                gsub(/\]/, "", $1)
-                print $1
-            }
-        ' | sort -rn
-    )"
-    for idx in $indexes; do
-        "$ACLTOOL" -del "$target" "$idx" >/dev/null 2>&1 || true
-    done
+    if "$ACLTOOL" -get "$target" 2>/dev/null | grep -F -- "$ace" >/dev/null 2>&1; then
+        return 0
+    fi
+    "$ACLTOOL" -add "$target" "$ace" >/dev/null 2>&1 || warn "DSM ACL add failed: $ace -> $target"
 }
-
 acl_set_ro() {
-    target="$1"
-    user="$2"
-    id "$user" >/dev/null 2>&1 || return 0
-    acl_remove_user_entries "$target" "$user"
-    "$ACLTOOL" -add "$target" "user:$user:allow:r-x---a-R-c--:fd--" >/dev/null 2>&1 || \
-        warn "Unable to apply read-only ACL: $user -> $target"
+    dsm_user_exists "$2" || return 0
+    acl_add_if_missing "$1" "user:$2:allow:r-x---a-R-c--:fd--"
 }
-
-acl_set_file_ro() {
-    target="$1"
-    user="$2"
-    [ -n "$user" ] || return 0
-    id "$user" >/dev/null 2>&1 || return 0
-    acl_remove_user_entries "$target" "$user"
-    "$ACLTOOL" -add "$target" "user:$user:allow:r-----a-R-c--:---n" >/dev/null 2>&1 || \
-        warn "Unable to apply file read ACL: $user -> $target"
-}
-
 acl_set_rw() {
-    target="$1"
-    user="$2"
-    id "$user" >/dev/null 2>&1 || return 0
-    acl_remove_user_entries "$target" "$user"
-    "$ACLTOOL" -add "$target" "user:$user:allow:rwxpdDaARWc--:fd--" >/dev/null 2>&1 || \
-        warn "Unable to apply read/write ACL: $user -> $target"
+    dsm_user_exists "$2" || return 0
+    acl_add_if_missing "$1" "user:$2:allow:rwxpdDaARWc--:fd--"
+}
+acl_set_file_ro() {
+    dsm_user_exists "$2" || return 0
+    acl_add_if_missing "$1" "user:$2:allow:r-----a-R-c--:---n"
+}
+acl_set_file_rw() {
+    dsm_user_exists "$2" || return 0
+    acl_add_if_missing "$1" "user:$2:allow:rwxpdDaARWc--:---n"
+}
+acl_repair_media_tree() {
+    tree="$1"
+    arr_user="$2"
+    [ -d "$tree" ] || return 0
+    [ "${ACL_REPAIR_EXISTING:-1}" = "1" ] || return 0
+    case "$tree" in
+        /volume[0-9]*/*) ;;
+        *) warn "Unsafe media ACL root: $tree"; return 0 ;;
+    esac
+    # Existing package-created directories/files may lack inherited ACEs.
+    # Never use -enforce-inherit, chmod -R, chown -R or -del here.
+    info "Non-destructive media ACL repair: $tree"
+    find "$tree" \( -type d -o -type f \) -print 2>/dev/null | while IFS= read -r entry; do
+        if [ -d "$entry" ]; then
+            acl_set_ro "$entry" "$PLEX_USER"
+            acl_set_rw "$entry" "$arr_user"
+            acl_set_rw "$entry" "$BAZARR_USER"
+            acl_set_rw "$entry" "$STACK_OWNER"
+            [ -z "$N8N_STACK_READER" ] || acl_set_rw "$entry" "$N8N_STACK_READER"
+        elif [ -f "$entry" ]; then
+            acl_set_file_ro "$entry" "$PLEX_USER"
+            acl_set_file_rw "$entry" "$arr_user"
+            acl_set_file_rw "$entry" "$BAZARR_USER"
+            acl_set_file_rw "$entry" "$STACK_OWNER"
+            [ -z "$N8N_STACK_READER" ] || acl_set_file_rw "$entry" "$N8N_STACK_READER"
+        fi
+    done
 }
 
 if [ -x "$ACLTOOL" ]; then
@@ -1756,6 +1768,11 @@ if [ -x "$ACLTOOL" ]; then
         acl_set_file_ro "$STACK_JSON" "$N8N_STACK_READER"
     fi
 
+    # Preserve human admin access when service ACLs are introduced.
+    acl_set_rw "$PLEXROOT" "$STACK_OWNER"
+    acl_set_rw "$PLEX_LIBRARY_ROOT" "$STACK_OWNER"
+    acl_set_rw "$MOVIES_ROOT" "$STACK_OWNER"
+    acl_set_rw "$SERIES_ROOT" "$STACK_OWNER"
     acl_set_ro "$PLEXROOT" "$PLEX_USER"
     acl_set_ro "$PLEX_LIBRARY_ROOT" "$PLEX_USER"
     acl_set_ro "$MOVIES_ROOT" "$PLEX_USER"
@@ -1764,11 +1781,17 @@ if [ -x "$ACLTOOL" ]; then
     acl_set_ro "$DECYPHARR_MOUNT" "$PLEX_USER"
 
     acl_set_ro "$PLEXROOT" "$RADARR_USER"
+    acl_set_ro "$PLEX_LIBRARY_ROOT" "$RADARR_USER"
+    acl_set_ro "$STACK_DIR" "$RADARR_USER"
+    acl_set_ro "$DECYPHARR_ROOT" "$RADARR_USER"
     acl_set_rw "$MOVIES_ROOT" "$RADARR_USER"
     acl_set_rw "$DECYPHARR_DOWNLOADS" "$RADARR_USER"
     acl_set_ro "$DECYPHARR_MOUNT" "$RADARR_USER"
 
     acl_set_ro "$PLEXROOT" "$SONARR_USER"
+    acl_set_ro "$PLEX_LIBRARY_ROOT" "$SONARR_USER"
+    acl_set_ro "$STACK_DIR" "$SONARR_USER"
+    acl_set_ro "$DECYPHARR_ROOT" "$SONARR_USER"
     acl_set_rw "$SERIES_ROOT" "$SONARR_USER"
     acl_set_rw "$DECYPHARR_DOWNLOADS" "$SONARR_USER"
     acl_set_ro "$DECYPHARR_MOUNT" "$SONARR_USER"
@@ -1776,7 +1799,14 @@ if [ -x "$ACLTOOL" ]; then
     # qBittorrent is kept as a fallback/manual download client.
     # It does not need direct write access to the Plex library.
     acl_set_ro "$PLEXROOT" "$QBIT_USER"
+    mkdir -p "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$QBIT_DOWNLOADS/$SONARR_CATEGORY"
     acl_set_rw "$QBIT_DOWNLOADS" "$QBIT_USER"
+    acl_set_rw "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$QBIT_USER"
+    acl_set_rw "$QBIT_DOWNLOADS/$SONARR_CATEGORY" "$QBIT_USER"
+    acl_set_ro "$QBIT_DOWNLOADS" "$RADARR_USER"
+    acl_set_rw "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$RADARR_USER"
+    acl_set_ro "$QBIT_DOWNLOADS" "$SONARR_USER"
+    acl_set_rw "$QBIT_DOWNLOADS/$SONARR_CATEGORY" "$SONARR_USER"
 
     # Bazarr must be able to write subtitles next to media files.
     acl_set_ro "$PLEXROOT" "$BAZARR_USER"
@@ -1784,11 +1814,22 @@ if [ -x "$ACLTOOL" ]; then
     acl_set_rw "$MOVIES_ROOT" "$BAZARR_USER"
     acl_set_rw "$SERIES_ROOT" "$BAZARR_USER"
 
+    acl_set_ro "$STACK_DIR" "$DECYPHARR_USER"
     acl_set_rw "$DECYPHARR_ROOT" "$DECYPHARR_USER"
     acl_set_rw "$DECYPHARR_MOUNT" "$DECYPHARR_USER"
     acl_set_rw "$DECYPHARR_DOWNLOADS" "$DECYPHARR_USER"
 
-    log "DSM ACLs applied (stack.json: admin=$STACK_OWNER, n8n=${N8N_STACK_READER:-none})"
+    if [ -n "$N8N_STACK_READER" ]; then
+        acl_set_ro "$PLEXROOT" "$N8N_STACK_READER"
+        acl_set_ro "$PLEX_LIBRARY_ROOT" "$N8N_STACK_READER"
+        acl_set_rw "$MOVIES_ROOT" "$N8N_STACK_READER"
+        acl_set_rw "$SERIES_ROOT" "$N8N_STACK_READER"
+        acl_set_rw "$QBIT_DOWNLOADS" "$N8N_STACK_READER"
+    fi
+    # Apply inherited roles to existing media, not just the library root.
+    acl_repair_media_tree "$MOVIES_ROOT" "$RADARR_USER"
+    acl_repair_media_tree "$SERIES_ROOT" "$SONARR_USER"
+        log "DSM ACLs applied (stack.json: admin=$STACK_OWNER, n8n=${N8N_STACK_READER:-none})"
 else
     warn "synoacltool was not found: DSM ACLs were not applied"
 fi
