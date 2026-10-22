@@ -4,10 +4,12 @@ on:
   push:
     paths:
       - "PLEX-bootstrap-Synology.sh"
+      - "repair-dsm-acls.sh"
       - ".github/workflows/validate-bootstrap.yml"
   pull_request:
     paths:
       - "PLEX-bootstrap-Synology.sh"
+      - "repair-dsm-acls.sh"
       - ".github/workflows/validate-bootstrap.yml"
 
 jobs:
@@ -17,5 +19,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Validate POSIX shell syntax
         run: /bin/sh -n PLEX-bootstrap-Synology.sh
+      - name: Validate standalone DSM ACL repair syntax
+        run: /bin/sh -n repair-dsm-acls.sh
       - name: Validate integrity marker
         run: tail -n 5 PLEX-bootstrap-Synology.sh | grep -q '^# END-PLEX-BOOTSTRAP-SYNOLOGY-V8.3$'
