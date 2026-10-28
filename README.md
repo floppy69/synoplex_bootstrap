@@ -28,12 +28,20 @@ MEDIA_ROOT, STACK_DIR, QBIT_DOWNLOADS, DECYPHARR_ROOT, STACK_OWNER,
 N8N_STACK_READER or category names as needed. The sudo-calling DSM account
 is used as default stack owner. Never assume a Docker UID equals a DSM account.
 
-Role-specific access is additive: Plex reads libraries, Radarr writes Movies,
-Sonarr writes Series, Bazarr writes subtitles, qBittorrent writes downloads,
-Decypharr writes its own data and mount, the administrator keeps media access,
-and an optional n8n DSM account can write import destinations. Prowlarr needs
-no write permissions to media. No existing synoacltool entries are deleted or
-forcibly inherited.
+Shared media access is additive: the seven DSM accounts `sc-qbittorrent`,
+`PlexMediaServer`, `sc-bazarr`, `sc-radarr`, `sc-sonarr`,
+`sc-decypharr`, and `VideoFactory` receive matching explicit level-0
+read/write/traverse ACLs on Plex media and configured qBittorrent download
+paths. With `ACL_REPAIR_EXISTING=1`, the existing regular files and
+subdirectories are also repaired. All seven accounts can **change or delete
+media**. Prowlarr needs no media write permission.
+
+This policy is strictly additive: existing DSM ACEs are not deleted, replaced,
+or forcibly inherited; pre-existing entries may remain, and deny ACEs require
+manual review. `stack.json`, Decypharr FUSE mounts, package configuration and
+unrelated DSM shares retain separate protections. n8n's Docker UID 1000 is
+not a DSM username; an actual DSM `N8N_STACK_READER` identity or matching
+mount UID/GID mapping is needed for n8n imports.
 
 ## Managed components
 
@@ -571,7 +579,7 @@ Series:
 /volumeX/Media/Plex/media/Series
 ```
 
-Plex only requires read access to the media library and the Decypharr mounted content required by the deployment.
+Plex needs only read access to play media, but the configured shared-media policy deliberately grants all seven service accounts the same write-enabled media role. The Decypharr mount retains its own separate ACLs.
 
 ## ACL model
 
@@ -579,16 +587,22 @@ The bootstrap applies DSM ACLs for the service accounts.
 
 Typical intent:
 
-| Account | Access |
+| Account | Media / qBittorrent downloads ACL |
 |---|---|
-| PlexMediaServer | Read media and Decypharr mount |
-| sc-radarr | Read/write Movies and required download paths |
-| sc-sonarr | Read/write Series and required download paths |
-| sc-decypharr | Read/write Decypharr data, mount, and downloads |
-| sc-qbittorrent | Read/write qBittorrent download directory |
-| sc-bazarr | Read/write Movies and Series for subtitles |
-| stack.json owner | Read/write stack configuration |
-| n8n SMB account | Read-only stack.json access |
+| sc-qbittorrent | Shared read/write/traverse |
+| PlexMediaServer | Shared read/write/traverse |
+| sc-bazarr | Shared read/write/traverse |
+| sc-radarr | Shared read/write/traverse |
+| sc-sonarr | Shared read/write/traverse |
+| sc-decypharr | Shared read/write/traverse |
+| VideoFactory | Shared read/write/traverse |
+
+For the managed media paths, new ACEs are `rwxpdDaARWc--:fd--`
+on directories and `rwxpdDaARWc--:---n` on existing regular files.
+The seven accounts are granted the same effective media role, but inherited
+or pre-existing ACL lines are preserved rather than normalized or deleted.
+The owner of `stack.json` and an optional n8n SMB reader have independent,
+narrow permissions on the central configuration.
 
 Do not solve ACL problems with `chmod 777`. `stack.json` contains credentials and API keys.
 
