@@ -54,7 +54,7 @@ The installer:
 2. Installs missing packages where compatible sources are available, or reuses installed packages.
 3. Initializes or safely merges the configuration file, preserving unknown JSON keys.
 4. Creates the Watchlist state file if it does not exist.
-5. Prepares media/download directories and applies restricted DSM ACLs.
+5. Prepares media/download directories and applies shared seven-account DSM media ACLs.
 6. Configures Decypharr from the central configuration, including optional DSM boot synchronization.
 7. Configures the Decypharr download client in Radarr and Sonarr where the APIs are reachable.
 
@@ -104,17 +104,30 @@ different NAS. STACK_OWNER defaults to the administrator invoking sudo;
 N8N_STACK_READER must refer to the *actual DSM account* used for NAS access,
 not an arbitrary container UID. Run it on DSM, not inside the n8n container.
 
-ACL roles are restricted to each service's needs:
+### Shared media ACLs for seven DSM accounts
 
-- **PlexMediaServer:** read and traverse media and the Decypharr mount.
-- **Sonarr:** read/write Series and its download category.
-- **Radarr:** read/write Movies and its download category.
-- **Bazarr:** write subtitles next to existing media.
-- **qBittorrent:** write download directories, not the Plex media library.
-- **Decypharr:** manage its mount and downloaded content.
-- **Prowlarr:** does not require write access to the media library.
-- **DSM administrator:** retain media and central configuration access.
-- **n8n DSM account (optional):** import media and access central state.
+On the managed Plex media and qBittorrent download folders, the bootstrap and
+`repair-dsm-acls.sh` now apply the **same explicit level-0 read/write/traverse
+ACL** to these seven accounts:
+
+- `sc-qbittorrent`, `PlexMediaServer`, `sc-bazarr`, `sc-radarr`,
+  `sc-sonarr`, `sc-decypharr`, and `VideoFactory`.
+
+Each media directory receives `rwxpdDaARWc--:fd--`, and existing regular
+files receive `rwxpdDaARWc--:---n` when
+`ACL_REPAIR_EXISTING=1` (the default). This covers the `_Plex` traversal
+folder, media roots, Movies, Series, and configured qBittorrent download and
+category folders. **All seven accounts can modify and delete media files**;
+this is an intentionally broad policy for a shared SynoPlex installation.
+
+Existing DSM ACL entries are not deleted or replaced, so other accounts and
+older read-only rules may remain; explicit deny ACEs are reported for manual
+review. The routine does not follow symlinks, force ACL inheritance, or change
+owners. It does **not** share these broad rights with private `stack.json`,
+Decypharr FUSE mounts, or unrelated system directories. `Prowlarr` does not
+need media access. The n8n container UID 1000 is **not** automatically a DSM
+user: configure `N8N_STACK_READER` with a real DSM account or a matching
+NAS mount identity for n8n imports.
 
 Existing directories and regular files are checked without following symbolic
 links. No synoacltool -del, -enforce-inherit, chmod -R, or chown -R is used.
