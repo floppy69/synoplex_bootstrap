@@ -65,63 +65,97 @@ file_rw() {
     exists_user "$2" || return 0
     add_acl "$1" "user:$2:allow:rwxpdDaARWc--:---n"
 }
+# Add an explicit level-0 ACL while preserving every existing DSM ACE.
+# Inherited permissions alone are not enough for all DSM media directories.
+shared_ace() {
+    shared_target="$1"; shared_user="$2"; shared_rights="$3"
+    [ -e "$shared_target" ] && [ ! -L "$shared_target" ] || return 0
+    if ! exists_user "$shared_user"; then
+        echo "WARN: DSM media user missing: $shared_user" >&2
+        return 0
+    fi
+    shared_rule="user:$shared_user:allow:$shared_rights"
+    shared_current="$("$ACLTOOL" -get "$shared_target" 2>/dev/null)" || {
+        echo "WARN: cannot read ACL: $shared_target" >&2
+        return 0
+    }
+    if printf '%s\n' "$shared_current" | grep -F -- "$shared_rule (level:0)" >/dev/null 2>&1; then
+        return 0
+    fi
+    if printf '%s\n' "$shared_current" | grep -F -- "user:$shared_user:deny:" >/dev/null 2>&1; then
+        echo "WARN: deny ACE needs manual review: $shared_target / $shared_user" >&2
+        return 0
+    fi
+    "$ACLTOOL" -add "$shared_target" "$shared_rule" >/dev/null 2>&1 ||
+        echo "WARN: could not add shared ACL: $shared_target / $shared_user" >&2
+}
+shared_dir() {
+    shared_dir_path="$1"
+    [ -d "$shared_dir_path" ] && [ ! -L "$shared_dir_path" ] || return 0
+    for shared_member in $MEDIA_SERVICE_USERS; do
+        shared_ace "$shared_dir_path" "$shared_member" 'rwxpdDaARWc--:fd--'
+    done
+}
+shared_file() {
+    shared_file_path="$1"
+    [ -f "$shared_file_path" ] && [ ! -L "$shared_file_path" ] || return 0
+    for shared_member in $MEDIA_SERVICE_USERS; do
+        shared_ace "$shared_file_path" "$shared_member" 'rwxpdDaARWc--:---n'
+    done
+}
+
 RADARR_USER="$(pkg_user radarr)"
 SONARR_USER="$(pkg_user sonarr)"
 QBIT_USER="$(pkg_user qbittorrent)"
 BAZARR_USER="$(pkg_user bazarr)"
 DECYPHARR_USER="$(pkg_user decypharr)"
 PLEX_USER=PlexMediaServer
+MEDIA_SERVICE_USERS="$QBIT_USER $PLEX_USER $BAZARR_USER $RADARR_USER $SONARR_USER $DECYPHARR_USER VideoFactory"
 
-echo "ACL repair (add-only): Plex=$PLEX_USER Radarr=$RADARR_USER Sonarr=$SONARR_USER Bazarr=$BAZARR_USER qBit=$QBIT_USER Decypharr=$DECYPHARR_USER admin=${STACK_OWNER:-none}"
+echo "ACL repair (add-only): seven equal media RWX users: $MEDIA_SERVICE_USERS; admin=${STACK_OWNER:-none}"
 echo "Media root: $MEDIA_ROOT"
 
-# Traversal on ancestors and immediate library roots.
+# Shared read/write/traverse access applies ONLY to the managed media tree.
+# The parent _Plex folder is included to prevent qBittorrent traversal errors.
 PLEXROOT="$(dirname "$MEDIA_ROOT")"
-for root in "$PLEXROOT" "$MEDIA_ROOT"; do
-    dir_ro "$root" "$PLEX_USER"
-    dir_ro "$root" "$RADARR_USER"
-    dir_ro "$root" "$SONARR_USER"
-    dir_ro "$root" "$BAZARR_USER"
-    dir_rw "$root" "$STACK_OWNER"
-    dir_ro "$root" "$N8N_STACK_READER"
+QBIT_PARENT="$(dirname "$QBIT_DOWNLOADS")"
+for shared_root in "$PLEXROOT" "$MEDIA_ROOT" "$MEDIA_ROOT/downloads" \
+    "$MOVIES_ROOT" "$SERIES_ROOT" "$QBIT_PARENT" "$QBIT_DOWNLOADS" \
+    "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$QBIT_DOWNLOADS/$SONARR_CATEGORY"; do
+    case "$shared_root" in
+        "$PLEXROOT"|"$PLEXROOT"/*) shared_dir "$shared_root" ;;
+        *) echo "WARN: skipping shared ACL outside Plex tree: $shared_root" >&2 ;;
+    esac
 done
 
-# A new directory may have its own explicit ACL and no inherited Plex ACE.
-# Walk both existing files and directories, preserving every old ACE.
-repair_library() {
-    root="$1"; arr_user="$2"
-    echo "Repairing $root"
-    find "$root" \( -type d -o -type f \) -print 2>/dev/null |
+# Existing files may have explicit ACLs that block inheritance from the root.
+# Opt out on very large, known-healthy libraries with ACL_REPAIR_EXISTING=0.
+repair_media_tree() {
+    repair_root="$1"
+    [ "${ACL_REPAIR_EXISTING:-1}" = 1 ] || return 0
+    [ -d "$repair_root" ] || return 0
+    case "$repair_root" in
+        "$PLEXROOT"/*) ;;
+        *) echo "WARN: refusing media ACL scan outside Plex tree: $repair_root" >&2; return 0 ;;
+    esac
+    echo "Repairing existing ACLs: $repair_root"
+    find "$repair_root" \( -type d -o -type f \) -print 2>/dev/null |
     while IFS= read -r entry; do
         if [ -d "$entry" ]; then
-            dir_ro "$entry" "$PLEX_USER"
-            dir_rw "$entry" "$arr_user"
-            dir_rw "$entry" "$BAZARR_USER"
+            shared_dir "$entry"
             dir_rw "$entry" "$STACK_OWNER"
             dir_rw "$entry" "$N8N_STACK_READER"
         elif [ -f "$entry" ]; then
-            file_ro "$entry" "$PLEX_USER"
-            file_rw "$entry" "$arr_user"
-            file_rw "$entry" "$BAZARR_USER"
+            shared_file "$entry"
             file_rw "$entry" "$STACK_OWNER"
             file_rw "$entry" "$N8N_STACK_READER"
         fi
     done
 }
-repair_library "$MOVIES_ROOT" "$RADARR_USER"
-repair_library "$SERIES_ROOT" "$SONARR_USER"
-
-# Package-specific download access, without granting clients broad media writes.
-dir_rw "$QBIT_DOWNLOADS" "$QBIT_USER"
-dir_ro "$QBIT_DOWNLOADS" "$SONARR_USER"
-dir_ro "$QBIT_DOWNLOADS" "$RADARR_USER"
-dir_rw "$QBIT_DOWNLOADS" "$N8N_STACK_READER"
-dir_rw "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$QBIT_USER"
-dir_rw "$QBIT_DOWNLOADS/$SONARR_CATEGORY" "$QBIT_USER"
-dir_rw "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$RADARR_USER"
-dir_rw "$QBIT_DOWNLOADS/$SONARR_CATEGORY" "$SONARR_USER"
-dir_rw "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$N8N_STACK_READER"
-dir_rw "$QBIT_DOWNLOADS/$SONARR_CATEGORY" "$N8N_STACK_READER"
+repair_media_tree "$MOVIES_ROOT"
+repair_media_tree "$SERIES_ROOT"
+repair_media_tree "$QBIT_DOWNLOADS/$RADARR_CATEGORY"
+repair_media_tree "$QBIT_DOWNLOADS/$SONARR_CATEGORY"
 
 # Configuration files retain their own ACLs and are never exposed publicly.
 dir_rw "$STACK_DIR" "$STACK_OWNER"
@@ -141,6 +175,7 @@ dir_ro "$DECYPHARR_ROOT/mount" "$PLEX_USER"
 dir_ro "$DECYPHARR_ROOT/mount" "$RADARR_USER"
 dir_ro "$DECYPHARR_ROOT/mount" "$SONARR_USER"
 
+# stack.json and Decypharr FUSE retain their own restricted ACLs.
 # Prowlarr manages indexers, not media files. It requires no library write ACL.
 echo "ACL repair finished. Existing ACL entries were not removed."
 echo "Check: sudo -u PlexMediaServer ls '$SERIES_ROOT/Slam Dunk/Season 1' | head"
