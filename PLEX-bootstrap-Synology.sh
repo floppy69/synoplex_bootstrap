@@ -1738,29 +1738,66 @@ acl_set_file_rw() {
     dsm_user_exists "$2" || return 0
     acl_add_if_missing "$1" "user:$2:allow:rwxpdDaARWc--:---n"
 }
+# Shared media policy: seven service identities receive the same explicit
+# RWX DSM ACL on Plex media/download paths, without touching stack.json.
+# Add-only, do not follow symbolic links or replace existing ACL entries.
+acl_add_shared_media_ace() {
+    shared_target="$1"
+    shared_account="$2"
+    shared_rights="$3"
+    [ -e "$shared_target" ] && [ ! -L "$shared_target" ] || return 0
+    dsm_user_exists "$shared_account" || {
+        warn "Media ACL account not found: $shared_account"
+        return 0
+    }
+    shared_ace="user:$shared_account:allow:$shared_rights"
+    shared_acl="$("$ACLTOOL" -get "$shared_target" 2>/dev/null)" || {
+        warn "Cannot read DSM ACL: $shared_target"
+        return 0
+    }
+    if printf '%s\n' "$shared_acl" | grep -F -- "$shared_ace (level:0)" >/dev/null 2>&1; then
+        return 0
+    fi
+    if printf '%s\n' "$shared_acl" | grep -F -- "user:$shared_account:deny:" >/dev/null 2>&1; then
+        warn "Deny ACL requires manual review: $shared_account -> $shared_target"
+        return 0
+    fi
+    "$ACLTOOL" -add "$shared_target" "$shared_ace" >/dev/null 2>&1 ||
+        warn "Could not add shared-media ACL: $shared_account -> $shared_target"
+}
+acl_share_media_dir() {
+    shared_dir="$1"
+    [ -d "$shared_dir" ] && [ ! -L "$shared_dir" ] || return 0
+    for shared_user in $MEDIA_SERVICE_USERS; do
+        acl_add_shared_media_ace "$shared_dir" "$shared_user" "rwxpdDaARWc--:fd--"
+    done
+}
+acl_share_media_file() {
+    shared_file="$1"
+    [ -f "$shared_file" ] && [ ! -L "$shared_file" ] || return 0
+    for shared_user in $MEDIA_SERVICE_USERS; do
+        acl_add_shared_media_ace "$shared_file" "$shared_user" "rwxpdDaARWc--:---n"
+    done
+}
+
 acl_repair_media_tree() {
     tree="$1"
-    arr_user="$2"
     [ -d "$tree" ] || return 0
     [ "${ACL_REPAIR_EXISTING:-1}" = "1" ] || return 0
     case "$tree" in
-        /volume[0-9]*/*) ;;
+        "$PLEXROOT"/*) ;;
         *) warn "Unsafe media ACL root: $tree"; return 0 ;;
     esac
-    # Existing package-created directories/files may lack inherited ACEs.
-    # Never use -enforce-inherit, chmod -R, chown -R or -del here.
-    info "Non-destructive media ACL repair: $tree"
+    # Repair existing regular media files as well as directory traversal.
+    # No deletion, recursive chmod/chown, forced ACL inheritance or symlinks.
+    info "Add-only shared-media ACL repair: $tree"
     find "$tree" \( -type d -o -type f \) -print 2>/dev/null | while IFS= read -r entry; do
         if [ -d "$entry" ]; then
-            acl_set_ro "$entry" "$PLEX_USER"
-            acl_set_rw "$entry" "$arr_user"
-            acl_set_rw "$entry" "$BAZARR_USER"
+            acl_share_media_dir "$entry"
             acl_set_rw "$entry" "$STACK_OWNER"
             [ -z "$N8N_STACK_READER" ] || acl_set_rw "$entry" "$N8N_STACK_READER"
         elif [ -f "$entry" ]; then
-            acl_set_file_ro "$entry" "$PLEX_USER"
-            acl_set_file_rw "$entry" "$arr_user"
-            acl_set_file_rw "$entry" "$BAZARR_USER"
+            acl_share_media_file "$entry"
             acl_set_file_rw "$entry" "$STACK_OWNER"
             [ -z "$N8N_STACK_READER" ] || acl_set_file_rw "$entry" "$N8N_STACK_READER"
         fi
@@ -1775,6 +1812,7 @@ if [ -x "$ACLTOOL" ]; then
     QBIT_USER="$(pkg_user qbittorrent)"
     BAZARR_USER="$(pkg_user bazarr)"
     DECYPHARR_USER="$(pkg_user decypharr)"
+    MEDIA_SERVICE_USERS="$QBIT_USER $PLEX_USER $BAZARR_USER $RADARR_USER $SONARR_USER $DECYPHARR_USER VideoFactory"
 
     # Ne jamais enfermer l'administrateur humain hors de stack.json.
     # Adding service ACLs to a DSM directory can break inheritance
@@ -1847,9 +1885,24 @@ if [ -x "$ACLTOOL" ]; then
         acl_set_rw "$SERIES_ROOT" "$N8N_STACK_READER"
         acl_set_rw "$QBIT_DOWNLOADS" "$N8N_STACK_READER"
     fi
-    # Apply inherited roles to existing media, not just the library root.
-    acl_repair_media_tree "$MOVIES_ROOT" "$RADARR_USER"
-    acl_repair_media_tree "$SERIES_ROOT" "$SONARR_USER"
+    # Uniform level-0 read/write/traverse ACL on managed media directories.
+    # Preserve private stack.json, package settings and Decypharr FUSE ACLs.
+    for shared_root in "$PLEXROOT" "$PLEX_LIBRARY_ROOT" \
+        "$PLEX_LIBRARY_ROOT/downloads" "$MOVIES_ROOT" "$SERIES_ROOT" \
+        "$(dirname "$QBIT_DOWNLOADS")" "$QBIT_DOWNLOADS" \
+        "$QBIT_DOWNLOADS/$RADARR_CATEGORY" "$QBIT_DOWNLOADS/$SONARR_CATEGORY"; do
+        case "$shared_root" in
+            "$PLEXROOT"|"$PLEXROOT"/*) acl_share_media_dir "$shared_root" ;;
+            *) warn "Outside managed Plex media tree, skipping shared ACL: $shared_root" ;;
+        esac
+    done
+
+    # Apply the same policy to already-existing regular files and folders.
+
+    acl_repair_media_tree "$MOVIES_ROOT"
+    acl_repair_media_tree "$SERIES_ROOT"
+    acl_repair_media_tree "$QBIT_DOWNLOADS/$RADARR_CATEGORY"
+    acl_repair_media_tree "$QBIT_DOWNLOADS/$SONARR_CATEGORY"
         log "DSM ACLs applied (stack.json: admin=$STACK_OWNER, n8n=${N8N_STACK_READER:-none})"
 else
     warn "synoacltool was not found: DSM ACLs were not applied"
