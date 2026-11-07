@@ -216,6 +216,39 @@ Radarr and Sonarr can have both download clients configured. The n8n workflow se
 
 Use the categories **radarr** and **sonarr** for their corresponding applications; do not substitute tv-sonarr unless your configuration explicitly requires it.
 
+### Deploy the n8n importer runtime script
+
+The published orchestrator now runs a **versioned JavaScript importer file** instead of embedding more than 130 KB of code into an Execute Command node. This avoids Linux's `E2BIG` argument-size failure.
+
+The workflow export in this repository expects:
+
+```text
+/home/node/.n8n/synoplex-scripts/media-smart-importer-00d12036.js
+```
+
+From the **Docker host running n8n**, with this repository checked out, install the checked-in script inside the n8n container under the container's `node` user:
+
+```sh
+N8N_CONTAINER=n8n  # change if your container has a different name
+docker exec -u node -i "$N8N_CONTAINER" sh -c '
+  set -eu
+  umask 077
+  mkdir -p /home/node/.n8n/synoplex-scripts
+  cat > /home/node/.n8n/synoplex-scripts/media-smart-importer-00d12036.js
+  node --check /home/node/.n8n/synoplex-scripts/media-smart-importer-00d12036.js
+' < scripts/n8n/media-smart-importer-00d12036.js
+```
+
+The checked-in script's expected SHA-256 is:
+
+```text
+93b25bb6f1e78330f6046e901edc2d921f8e7177517878be9efdbf7044efa771
+```
+
+Confirm it before installation with `sha256sum scripts/n8n/media-smart-importer-00d12036.js`. The importer reads `stack.json` at runtime and **does not contain API credentials**. Ensure the n8n container has the existing NAS mounts and read permissions it requires.
+
+**Order of operations:** deploy and syntax-check this script first, then import and activate the n8n JSON workflow. The NAS one-line bootstrap does **not** install n8n or deploy this file to another machine. If the script is missing, the importer fails closed; it must not be replaced with a placeholder command.
+
 ## After installation
 
 The installer prints the detected service URLs, configuration paths and package status. Check the services from an SSH session on the NAS:
@@ -277,6 +310,7 @@ sudo /bin/sh PLEX-bootstrap-Synology.sh
 - [PLEX-bootstrap-Synology.sh](./PLEX-bootstrap-Synology.sh): DSM 7 bootstrap, v8.3.
 - [PLEX Bootstrap Synology - Orchestrator.json](./PLEX%20Bootstrap%20Synology%20-%20Orchestrator.json): n8n workflow.
 - [README.md](./README.md): installation, configuration and verification.
+- [scripts/n8n/media-smart-importer-00d12036.js](./scripts/n8n/media-smart-importer-00d12036.js): versioned n8n importer runtime, verified against the live orchestrator.
 
 ---
 
