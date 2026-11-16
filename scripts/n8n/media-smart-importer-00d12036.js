@@ -1147,7 +1147,13 @@ if(!markerVerified){
 ctx.sonarrAclCache.set(aclReadyNas,{markerVerified,checkedVia,probeError});
 }
 const aclState=ctx.sonarrAclCache.get(aclReadyNas);
-if(!aclState.markerVerified)return {
+// A legacy ACL marker is not proof that Sonarr can import a downloaded file.
+// Allow a verified Sonarr queue identity or C411 pack through, then require
+// Sonarr's per-file ManualImport preview to agree before submitting any file.
+const queueLinks=(ctx.sonarrQueue?.records||[]).filter(q=>String(q.downloadId||'').toLowerCase()===hash);
+const queueSeriesIds=new Set(queueLinks.map(q=>Number(q.seriesId)).filter(x=>x>0));
+const verifiedQueueIdentity=queueSeriesIds.size===1&&queueSeriesIds.has(Number(series.id))&&Number(series.tvdbId)>0;
+if(!aclState.markerVerified&&!verifiedQueueIdentity&&!hasQbitTag(t,'seed-c411'))return {
 category:'sonarr',torrent:t.name,status:'PACK_NAS_ACL_NOT_VERIFIED',
 seriesId:series.id,seriesTitle:series.title,sourceVideoCount:evidence.sourceVideoCount,
 expectedMarker:aclReadyNas,verificationMethod:aclState.checkedVia,
@@ -1233,6 +1239,12 @@ if(verifiedPack){
   continue;
 }
 if(!row){blocked.push(item.filename);continue;}
+// Never override a conflicting Sonarr preview with a guessed file mapping.
+const previewSeriesId=Number(row.series?.id||row.seriesId||0);
+const previewEpisodeIds=(Array.isArray(row.episodes)?row.episodes:[]).map(e=>Number(e.id)).filter(x=>x>0);
+if(previewSeriesId!==Number(series.id)||previewEpisodeIds.length!==1||previewEpisodeIds[0]!==Number(item.episode.id)){
+  blocked.push(item.filename);continue;
+}
 const quality=row.quality?.quality?.id?row.quality:(qItem?.quality?.quality?.id?qItem.quality:safePackQualityFromFilename(item.filename,ctx.safePackQualityDefinitions));
 if(!quality){missingQuality.push(item.filename);continue;}
 if(!existsNas(item.path)){blocked.push(item.filename);continue;}
@@ -1640,6 +1652,21 @@ if(category==='sonarr'&&Number(t.progress)===1&&
     }catch(e){queueItems.push({error:e.message});}
     let manifestAudit=null;
     const blocked=queueItems.some(q=>String(q.trackedDownloadState||'').toLowerCase()==='importblocked');
+    // Partial import is safer than relocating an entire torrent containing
+    // unmatched specials. Resume across cycles using verified Sonarr evidence.
+    if(match&&safePath&&Number(t.progress)===1&&existsNas(current)){
+      const evidence=sonarrImportEvidence(t,ctx.sonarrHistory?.records||[]);
+      const previous=readSafePackState()[hash];
+      const missingCoverage=Number.isFinite(Number(libraryEpisodeFiles))&&
+        Number(libraryEpisodeFiles)<Number(evidence.sourceVideoCount||0);
+      if(blocked||Boolean(previous)||(isC411&&missingCoverage)){
+        const recovered=await recoverSonarrUnparsedIntegral(t,ctx,evidence,seeds,true);
+        if(recovered){
+          results.push({...recovered,c411:isC411,keepSeeding:true});
+          continue;
+        }
+      }
+    }
     if(blocked&&match&&safePath&&libraryEpisodeFiles===0&&
       current.startsWith('/volume1/VideoFactory/_Plex/media/downloads/qbittorrent/sonarr/')&&
       relocationRequests<MAX_RELOCATIONS_PER_RUN&&
